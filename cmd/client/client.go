@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/binary"
 	"flag"
 	"fmt"
 	"log"
@@ -10,19 +11,20 @@ import (
 	"strings"
 	"syscall"
 	"time"
-	"encoding/binary"
 
 	"github.com/Sudo-Ivan/reticulum-go/internal/config"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/common"
+	"github.com/Sudo-Ivan/reticulum-go/pkg/destination"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/identity"
-	"github.com/Sudo-Ivan/reticulum-go/pkg/transport"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/interfaces"
-	"github.com/Sudo-Ivan/reticulum-go/pkg/announce"
+	"github.com/Sudo-Ivan/reticulum-go/pkg/link"
+	"github.com/Sudo-Ivan/reticulum-go/pkg/packet"
+	"github.com/Sudo-Ivan/reticulum-go/pkg/transport"
 )
 
 var (
-	configPath = flag.String("config", "", "Path to config file")
-	targetHash = flag.String("target", "", "Target destination hash")
+	configPath       = flag.String("config", "", "Path to config file")
+	targetHash       = flag.String("target", "", "Target destination hash")
 	generateIdentity = flag.Bool("generate-identity", false, "Generate a new identity and print its hash")
 )
 
@@ -61,6 +63,7 @@ func NewClient(cfg *common.ReticulumConfig) (*Client, error) {
 }
 
 func (c *Client) Start() error {
+	// Initialize interfaces
 	for _, ifaceConfig := range c.config.Interfaces {
 		var iface common.NetworkInterface
 
@@ -74,14 +77,8 @@ func (c *Client) Start() error {
 				ifaceConfig.I2PTunneled,
 			)
 			if err != nil {
-				log.Printf("Failed to create TCP interface %s: %v", ifaceConfig.Name, err)
-				continue
+				return fmt.Errorf("failed to create TCP interface %s: %v", ifaceConfig.Name, err)
 			}
-			
-			callback := common.PacketCallback(func(data []byte, iface interface{}) {
-				c.handlePacket(data, iface)
-			})
-			client.SetPacketCallback(callback)
 			iface = client
 
 		case "UDPInterface":
@@ -92,47 +89,23 @@ func (c *Client) Start() error {
 				"", // No target address for client initially
 			)
 			if err != nil {
-				log.Printf("Failed to create UDP interface %s: %v", ifaceConfig.Name, err)
-				continue
+				return fmt.Errorf("failed to create UDP interface %s: %v", ifaceConfig.Name, err)
 			}
-			
-			callback := common.PacketCallback(func(data []byte, iface interface{}) {
-				c.handlePacket(data, iface)
-			})
-			udp.SetPacketCallback(callback)
 			iface = udp
 
-		case "AutoInterface":
-			log.Printf("AutoInterface type not yet implemented")
-			continue
-
 		default:
-			log.Printf("Unknown interface type: %s", ifaceConfig.Type)
-			continue
+			return fmt.Errorf("unsupported interface type: %s", ifaceConfig.Type)
 		}
 
-		if iface != nil {
-			c.interfaces = append(c.interfaces, iface)
-		}
+		c.interfaces = append(c.interfaces, iface)
+		log.Printf("Created interface %s", iface.GetName())
 	}
 
-	// Start periodic announce after interfaces are set up
+	// Start periodic announces
 	go func() {
-		// Initial delay to allow interfaces to connect
-		time.Sleep(5 * time.Second)
-		
-		// Send first announce
-		c.sendAnnounce()
-		
-		// Set up periodic announces
-		ticker := time.NewTicker(30 * time.Second)
-		defer ticker.Stop()
-		
 		for {
-			select {
-			case <-ticker.C:
-				c.sendAnnounce()
-			}
+			c.sendAnnounce()
+			time.Sleep(30 * time.Second)
 		}
 	}()
 
@@ -140,7 +113,7 @@ func (c *Client) Start() error {
 	return nil
 }
 
-func (c *Client) handlePacket(data []byte, iface interface{}) {
+func (c *Client) handlePacket(data []byte, p *packet.Packet) {
 	if len(data) < 1 {
 		return
 	}
@@ -150,7 +123,7 @@ func (c *Client) handlePacket(data []byte, iface interface{}) {
 	case 0x04: // Announce packet
 		c.handleAnnounce(data[1:])
 	default:
-		c.transport.HandlePacket(data, iface)
+		c.transport.HandlePacket(data, p)
 	}
 }
 
@@ -174,42 +147,52 @@ func (c *Client) handleAnnounce(data []byte) {
 		// Extract app data if present
 		dataLen := binary.BigEndian.Uint16(data[42:44])
 		if len(data) >= 44+int(dataLen) {
-			appData := data[44:44+dataLen]
+			appData := data[44 : 44+dataLen]
 			log.Printf("  App Data: %s", string(appData))
 		}
 	}
 }
 
 func (c *Client) sendAnnounce() {
-	// Create announce packet following RNS protocol
-	announceData := make([]byte, 0, 128)
-	announceData = append(announceData, 0x04)        // Announce packet type
-	announceData = append(announceData, c.identity.Hash()...) // Identity hash (32 bytes)
-	
-	// Add timestamp (8 bytes, big-endian)
-	timestamp := time.Now().Unix()
+	announceData := make([]byte, 0)
+
+	// Packet type (1 byte)
+	announceData = append(announceData, 0x04)
+
+	// Destination hash (16 bytes)
+	destHash := identity.TruncatedHash(c.identity.GetPublicKey())
+	announceData = append(announceData, destHash...)
+
+	// Timestamp (8 bytes)
 	timeBytes := make([]byte, 8)
-	binary.BigEndian.PutUint64(timeBytes, uint64(timestamp))
+	binary.BigEndian.PutUint64(timeBytes, uint64(time.Now().Unix()))
 	announceData = append(announceData, timeBytes...)
-	
-	// Add hops (1 byte)
-	announceData = append(announceData, 0x00) // Initial hop count
-	
-	// Add flags (1 byte)
-	announceData = append(announceData, byte(announce.ANNOUNCE_IDENTITY)) // Using identity announce type
-	
-	// Add app data with length prefix
+
+	// Hops (1 byte)
+	announceData = append(announceData, 0x00)
+
+	// Flags (1 byte)
+	announceData = append(announceData, 0x00)
+
+	// Public key
+	announceData = append(announceData, c.identity.GetPublicKey()...)
+
+	// App data with length prefix
 	appData := []byte("RNS.Go.Client")
 	lenBytes := make([]byte, 2)
 	binary.BigEndian.PutUint16(lenBytes, uint16(len(appData)))
 	announceData = append(announceData, lenBytes...)
 	announceData = append(announceData, appData...)
 
-	// Sign the announce packet
-	signature := c.identity.Sign(announceData)
+	// Sign the announce data
+	signData := append(destHash, c.identity.GetPublicKey()...)
+	signData = append(signData, appData...)
+	signature := c.identity.Sign(signData)
 	announceData = append(announceData, signature...)
 
-	log.Printf("Sending announce packet, length: %d bytes", len(announceData))
+	log.Printf("Sending announce for identity: %s", c.identity.Hex())
+	log.Printf("Announce packet length: %d bytes", len(announceData))
+	log.Printf("Announce packet hex: %x", announceData)
 
 	for _, iface := range c.interfaces {
 		if err := iface.Send(announceData, ""); err != nil {
@@ -225,6 +208,54 @@ func (c *Client) Stop() {
 		iface.Detach()
 	}
 	c.transport.Close()
+}
+
+func (c *Client) Connect(destHash []byte) error {
+	// Recall server identity
+	serverIdentity, err := identity.Recall(destHash)
+	if err != nil {
+		return err
+	}
+
+	// Create destination
+	dest, err := destination.New(
+		serverIdentity,
+		destination.OUT,
+		destination.SINGLE,
+		"example_utilities",
+		"identifyexample",
+	)
+	if err != nil {
+		return err
+	}
+
+	// Create link with all required parameters
+	link := link.NewLink(
+		dest,
+		c.transport, // Add the transport instance
+		c.handleLinkEstablished,
+		c.handleLinkClosed,
+	)
+
+	// Set callbacks
+	link.SetPacketCallback(c.handlePacket)
+
+	return nil
+}
+
+func (c *Client) handleLinkEstablished(l *link.Link) {
+	log.Printf("Link established with server, identifying...")
+
+	// Identify to server
+	if err := l.Identify(c.identity); err != nil {
+		log.Printf("Failed to identify: %v", err)
+		l.Teardown()
+		return
+	}
+}
+
+func (c *Client) handleLinkClosed(l *link.Link) {
+	log.Printf("Link closed")
 }
 
 func main() {

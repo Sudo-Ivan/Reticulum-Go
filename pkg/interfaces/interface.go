@@ -1,29 +1,42 @@
 package interfaces
 
 import (
-	"fmt"
-	"time"
 	"encoding/binary"
+	"fmt"
 	"net"
+	"sync"
+	"time"
 
 	"github.com/Sudo-Ivan/reticulum-go/pkg/common"
 )
 
 const (
 	BITRATE_MINIMUM = 5 // Minimum required bitrate in bits/sec
-	MODE_FULL      = 0x01
+	MODE_FULL       = 0x01
 )
 
 type Interface interface {
-	common.NetworkInterface
-	Send(data []byte, target string) error
-	Detach()
-	IsEnabled() bool
 	GetName() string
+	GetType() common.InterfaceType
+	GetMode() common.InterfaceMode
+	IsOnline() bool
+	IsDetached() bool
+	Detach()
+	Send(data []byte, addr string) error
+	SetPacketCallback(common.PacketCallback)
+	GetPacketCallback() common.PacketCallback
 }
 
 type BaseInterface struct {
 	common.BaseInterface
+	name           string
+	mode           common.InterfaceMode
+	ifType         common.InterfaceType
+	online         bool
+	detached       bool
+	mtu            int
+	mutex          sync.RWMutex
+	packetCallback common.PacketCallback
 }
 
 func (i *BaseInterface) SetPacketCallback(callback common.PacketCallback) {
@@ -36,11 +49,11 @@ func (i *BaseInterface) ProcessIncoming(data []byte) {
 	i.Mutex.RLock()
 	callback := i.PacketCallback
 	i.Mutex.RUnlock()
-	
+
 	if callback != nil {
 		callback(data, i)
 	}
-	
+
 	i.RxBytes += uint64(len(data))
 }
 
@@ -76,11 +89,11 @@ func (i *BaseInterface) SendLinkPacket(dest []byte, data []byte, timestamp time.
 	frame := make([]byte, 0, len(dest)+len(data)+9)
 	frame = append(frame, 0x02)
 	frame = append(frame, dest...)
-	
+
 	ts := make([]byte, 8)
 	binary.BigEndian.PutUint64(ts, uint64(timestamp.Unix()))
 	frame = append(frame, ts...)
-	
+
 	frame = append(frame, data...)
 
 	return i.ProcessOutgoing(frame)
@@ -124,4 +137,4 @@ func (i *BaseInterface) GetConn() net.Conn {
 
 func (i *BaseInterface) IsEnabled() bool {
 	return i.Online && !i.Detached
-} 
+}

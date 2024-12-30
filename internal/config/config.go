@@ -4,22 +4,22 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/pelletier/go-toml"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/common"
+	"github.com/pelletier/go-toml"
 )
 
 const (
 	DefaultSharedInstancePort  = 37428
 	DefaultInstanceControlPort = 37429
-	DefaultLogLevel           = 4
+	DefaultLogLevel            = 4
 )
 
 func DefaultConfig() *common.ReticulumConfig {
 	return &common.ReticulumConfig{
-		EnableTransport:       false,
-		ShareInstance:        true,
-		SharedInstancePort:   DefaultSharedInstancePort,
-		 InstanceControlPort:  DefaultInstanceControlPort,
+		EnableTransport:     false,
+		ShareInstance:       true,
+		SharedInstancePort:  DefaultSharedInstancePort,
+		InstanceControlPort: DefaultInstanceControlPort,
 		PanicOnInterfaceErr: false,
 		LogLevel:            DefaultLogLevel,
 		Interfaces:          make(map[string]*common.InterfaceConfig),
@@ -85,7 +85,15 @@ func CreateDefaultConfig(path string) error {
 		Type:       "TCPClientInterface",
 		Enabled:    true,
 		TargetHost: "rns.quad4.io",
-		 TargetPort: 4242,
+		TargetPort: 4242,
+	}
+
+	// Add default UDP interface
+	cfg.Interfaces["local udp"] = &common.InterfaceConfig{
+		Type:    "UDPInterface",
+		Enabled: true,
+		Address: "0.0.0.0",
+		Port:    37428, // Default RNS port
 	}
 
 	data, err := toml.Marshal(cfg)
@@ -118,4 +126,4 @@ func InitConfig() (*common.ReticulumConfig, error) {
 
 	// Load config
 	return LoadConfig(configPath)
-} 
+}

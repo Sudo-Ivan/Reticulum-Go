@@ -6,103 +6,139 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
-	"encoding/binary"
 	"errors"
 	"io"
 	"sync"
 	"time"
 
+	"github.com/Sudo-Ivan/reticulum-go/pkg/destination"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/identity"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/packet"
+	"github.com/Sudo-Ivan/reticulum-go/pkg/transport"
 )
 
 const (
 	CURVE = "Curve25519"
 
 	ESTABLISHMENT_TIMEOUT_PER_HOP = 6
-	KEEPALIVE_TIMEOUT_FACTOR     = 4
-	STALE_GRACE                  = 2
-	KEEPALIVE                    = 360
-	STALE_TIME                   = 720
+	KEEPALIVE_TIMEOUT_FACTOR      = 4
+	STALE_GRACE                   = 2
+	KEEPALIVE                     = 360
+	STALE_TIME                    = 720
 
 	ACCEPT_NONE = 0x00
 	ACCEPT_ALL  = 0x01
 	ACCEPT_APP  = 0x02
 
-	STATUS_PENDING     = 0x00
-	STATUS_ACTIVE      = 0x01
-	STATUS_CLOSED      = 0x02
-	STATUS_FAILED      = 0x03
+	STATUS_PENDING = 0x00
+	STATUS_ACTIVE  = 0x01
+	STATUS_CLOSED  = 0x02
+	STATUS_FAILED  = 0x03
+
+	// Add packet types
+	PACKET_TYPE_DATA     = 0x00
+	PACKET_TYPE_LINK     = 0x01
+	PACKET_TYPE_IDENTIFY = 0x02
 )
 
 type Link struct {
-	mutex              sync.RWMutex
-	destination        interface{}
-	status            byte
-	establishedAt     time.Time
-	lastInbound       time.Time
-	lastOutbound      time.Time
-	lastDataReceived  time.Time
-	lastDataSent      time.Time
-	
-	remoteIdentity    *identity.Identity
-	sessionKey        []byte
-	linkID            []byte
-	
+	mutex            sync.RWMutex
+	destination      *destination.Destination
+	status           byte
+	establishedAt    time.Time
+	lastInbound      time.Time
+	lastOutbound     time.Time
+	lastDataReceived time.Time
+	lastDataSent     time.Time
+
+	remoteIdentity *identity.Identity
+	sessionKey     []byte
+	linkID         []byte
+
 	rtt               float64
 	establishmentRate float64
-	
-	trackPhyStats     bool
-	rssi              float64
-	snr               float64
-	q                 float64
-	
-	resourceStrategy  byte
-	
+
 	establishedCallback func(*Link)
-	closedCallback     func(*Link)
-	packetCallback     func([]byte, *packet.Packet)
-	resourceCallback   func(interface{}) bool
-	resourceStartedCallback func(interface{})
+	closedCallback      func(*Link)
+	packetCallback      func([]byte, *packet.Packet)
+	identifiedCallback  func(*Link, *identity.Identity)
+
+	teardownReason byte
+	hmacKey        []byte
+	transport      *transport.Transport
+
+	// Add missing fields
+	rssi                      float64
+	snr                       float64
+	q                         float64
+	resourceCallback          func(interface{}) bool
+	resourceStartedCallback   func(interface{})
 	resourceConcludedCallback func(interface{})
-	remoteIdentifiedCallback func(*Link, *identity.Identity)
+	resourceStrategy          byte
 }
 
-func New(dest interface{}, establishedCb func(*Link), closedCb func(*Link)) *Link {
-	l := &Link{
+func NewLink(dest *destination.Destination, transport *transport.Transport, establishedCallback func(*Link), closedCallback func(*Link)) *Link {
+	return &Link{
 		destination:        dest,
 		status:            STATUS_PENDING,
-		establishedAt:     time.Time{},
-		lastInbound:       time.Time{},
-		lastOutbound:      time.Time{},
-		lastDataReceived:  time.Time{},
-		lastDataSent:      time.Time{},
-		resourceStrategy:  ACCEPT_NONE,
-		establishedCallback: establishedCb,
-		closedCallback:     closedCb,
+		transport:         transport,
+		establishedCallback: establishedCallback,
+		closedCallback:     closedCallback,
+		establishedAt:      time.Time{}, // Zero time until established
+		lastInbound:        time.Time{},
+		lastOutbound:       time.Time{},
+		lastDataReceived:   time.Time{},
+		lastDataSent:       time.Time{},
 	}
-
-	return l
 }
 
-func (l *Link) Identify(id *identity.Identity) error {
+func (l *Link) Establish() error {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 
-	if l.status != STATUS_ACTIVE {
-		return errors.New("link not active")
+	if l.status != STATUS_PENDING {
+		return errors.New("link already established or failed")
 	}
 
-	// Create identification message
-	idMsg := append(id.GetPublicKey(), id.Sign(l.linkID)...)
-	
-	// Encrypt and send identification
-	err := l.SendPacket(idMsg)
+	destPublicKey := l.destination.GetPublicKey()
+	if destPublicKey == nil {
+		return errors.New("destination has no public key")
+	}
+
+	// Create link request packet
+	p, err := packet.NewPacket(
+		packet.PACKET_TYPE_LINK,
+		0x00, // flags
+		0x00, // hops
+		destPublicKey,
+		l.linkID,
+	)
 	if err != nil {
 		return err
 	}
 
-	return nil
+	// Send through transport
+	return l.transport.SendPacket(p)
+}
+
+func (l *Link) Identify(id *identity.Identity) error {
+	if !l.IsActive() {
+		return errors.New("link not active")
+	}
+
+	// Create identify packet
+	p, err := packet.NewPacket(
+		packet.PACKET_TYPE_IDENTIFY,
+		0x00,
+		0x00,
+		l.destination.GetPublicKey(),
+		id.GetPublicKey(),
+	)
+	if err != nil {
+		return err
+	}
+
+	return l.transport.SendPacket(p)
 }
 
 func (l *Link) HandleIdentification(data []byte) error {
@@ -110,26 +146,27 @@ func (l *Link) HandleIdentification(data []byte) error {
 	defer l.mutex.Unlock()
 
 	if len(data) < ed25519.PublicKeySize+ed25519.SignatureSize {
-		return errors.New("invalid identification data")
+		return errors.New("invalid identification data length")
 	}
 
 	pubKey := data[:ed25519.PublicKeySize]
 	signature := data[ed25519.PublicKeySize:]
 
-	remoteIdentity := &identity.Identity{}
-	if !remoteIdentity.LoadPublicKey(pubKey) {
-		return errors.New("invalid remote public key")
+	remoteIdentity := identity.FromPublicKey(pubKey)
+	if remoteIdentity == nil {
+		return errors.New("invalid remote identity")
 	}
 
-	// Verify signature of link ID
-	if !remoteIdentity.Verify(l.linkID, signature) {
-		return errors.New("invalid identification signature")
+	// Verify signature
+	signData := append(l.linkID, pubKey...)
+	if !remoteIdentity.Verify(signData, signature) {
+		return errors.New("invalid signature")
 	}
 
 	l.remoteIdentity = remoteIdentity
 
-	if l.remoteIdentifiedCallback != nil {
-		l.remoteIdentifiedCallback(l, remoteIdentity)
+	if l.identifiedCallback != nil {
+		l.identifiedCallback(l, remoteIdentity)
 	}
 
 	return nil
@@ -158,8 +195,8 @@ func (l *Link) Request(path string, data []byte, timeout time.Duration) (*Reques
 
 	receipt := &RequestReceipt{
 		requestID: requestID,
-		status: STATUS_PENDING,
-		sentAt: time.Now(),
+		status:    STATUS_PENDING,
+		sentAt:    time.Now(),
 	}
 
 	// Send request
@@ -184,12 +221,12 @@ func (l *Link) Request(path string, data []byte, timeout time.Duration) (*Reques
 }
 
 type RequestReceipt struct {
-	mutex       sync.RWMutex
-	requestID   []byte
-	status      byte
-	sentAt      time.Time
-	receivedAt  time.Time
-	response    []byte
+	mutex      sync.RWMutex
+	requestID  []byte
+	status     byte
+	sentAt     time.Time
+	receivedAt time.Time
+	response   []byte
 }
 
 func (r *RequestReceipt) GetRequestID() []byte {
@@ -227,10 +264,13 @@ func (r *RequestReceipt) Concluded() bool {
 	return status == STATUS_ACTIVE || status == STATUS_FAILED
 }
 
-func (l *Link) TrackPhyStats(track bool) {
+func (l *Link) TrackPhyStats(rssi float64, snr float64, q float64) {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
-	l.trackPhyStats = track
+
+	l.rssi = rssi
+	l.snr = snr
+	l.q = q
 }
 
 func (l *Link) GetRSSI() float64 {
@@ -319,7 +359,7 @@ func (l *Link) GetRemoteIdentity() *identity.Identity {
 func (l *Link) Teardown() {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
-	
+
 	if l.status == STATUS_ACTIVE {
 		l.status = STATUS_CLOSED
 		if l.closedCallback != nil {
@@ -361,60 +401,17 @@ func (l *Link) SetResourceConcludedCallback(callback func(interface{})) {
 func (l *Link) SetRemoteIdentifiedCallback(callback func(*Link, *identity.Identity)) {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
-	l.remoteIdentifiedCallback = callback
+	l.identifiedCallback = callback
 }
 
 func (l *Link) SetResourceStrategy(strategy byte) error {
 	if strategy != ACCEPT_NONE && strategy != ACCEPT_ALL && strategy != ACCEPT_APP {
 		return errors.New("unsupported resource strategy")
 	}
-	
+
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
 	l.resourceStrategy = strategy
-	return nil
-}
-
-func NewLink(destination interface{}, establishedCallback func(*Link), closedCallback func(*Link)) *Link {
-	l := &Link{
-		destination:        destination,
-		status:            STATUS_PENDING,
-		establishedAt:     time.Time{},
-		lastInbound:       time.Time{},
-		lastOutbound:      time.Time{},
-		lastDataReceived:  time.Time{},
-		lastDataSent:      time.Time{},
-		establishedCallback: establishedCallback,
-		closedCallback:     closedCallback,
-		resourceStrategy:   ACCEPT_NONE,
-		trackPhyStats:     false,
-	}
-	
-	return l
-}
-
-func (l *Link) Establish() error {
-	l.mutex.Lock()
-	defer l.mutex.Unlock()
-
-	if l.status != STATUS_PENDING {
-		return errors.New("link already established or failed")
-	}
-
-	// Generate session key using ECDH
-	ephemeralKey := make([]byte, 32)
-	if _, err := rand.Read(ephemeralKey); err != nil {
-		return err
-	}
-	l.sessionKey = ephemeralKey
-
-	l.establishedAt = time.Now()
-	l.status = STATUS_ACTIVE
-	
-	if l.establishedCallback != nil {
-		l.establishedCallback(l)
-	}
-	
 	return nil
 }
 
@@ -426,8 +423,14 @@ func (l *Link) SendPacket(data []byte) error {
 		return errors.New("link not active")
 	}
 
-	// Encrypt data using session key
-	encryptedData, err := l.encrypt(data)
+	// Compute HMAC first
+	messageHMAC := l.destination.GetIdentity().ComputeHMAC(l.hmacKey, data)
+
+	// Combine data and HMAC
+	authenticatedData := append(data, messageHMAC...)
+
+	// Encrypt authenticated data using session key
+	encryptedData, err := l.encrypt(authenticatedData)
 	if err != nil {
 		return err
 	}
@@ -456,11 +459,24 @@ func (l *Link) HandleInbound(data []byte) error {
 		return err
 	}
 
+	// Split message and HMAC
+	if len(decryptedData) < sha256.Size {
+		return errors.New("received data too short")
+	}
+
+	message := decryptedData[:len(decryptedData)-sha256.Size]
+	messageHMAC := decryptedData[len(decryptedData)-sha256.Size:]
+
+	// Verify HMAC
+	if !l.destination.GetIdentity().ValidateHMAC(l.hmacKey, message, messageHMAC) {
+		return errors.New("invalid message authentication code")
+	}
+
 	l.lastInbound = time.Now()
 	l.lastDataReceived = time.Now()
 
 	if l.packetCallback != nil {
-		l.packetCallback(decryptedData, nil)
+		l.packetCallback(message, nil)
 	}
 
 	return nil
@@ -514,16 +530,7 @@ func (l *Link) decrypt(data []byte) ([]byte, error) {
 }
 
 func (l *Link) UpdatePhyStats(rssi float64, snr float64, q float64) {
-	if !l.trackPhyStats {
-		return
-	}
-	
-	l.mutex.Lock()
-	defer l.mutex.Unlock()
-	
-	l.rssi = rssi
-	l.snr = snr
-	l.q = q
+	l.TrackPhyStats(rssi, snr, q)
 }
 
 func (l *Link) GetRTT() float64 {
@@ -546,4 +553,4 @@ func (l *Link) GetStatus() byte {
 
 func (l *Link) IsActive() bool {
 	return l.GetStatus() == STATUS_ACTIVE
-} 
+}

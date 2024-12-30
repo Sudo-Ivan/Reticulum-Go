@@ -5,6 +5,7 @@ import (
 	"net"
 	"sync"
 	"time"
+
 	"github.com/Sudo-Ivan/reticulum-go/pkg/common"
 )
 
@@ -18,9 +19,9 @@ const (
 	KISS_TFEND = 0xDC
 	KISS_TFESC = 0xDD
 
-	TCP_USER_TIMEOUT    = 24
-	TCP_PROBE_AFTER     = 5
-	TCP_PROBE_INTERVAL  = 2
+	TCP_USER_TIMEOUT   = 24
+	TCP_PROBE_AFTER    = 5
+	TCP_PROBE_INTERVAL = 2
 	TCP_PROBES         = 12
 	RECONNECT_WAIT     = 5
 	INITIAL_TIMEOUT    = 5
@@ -28,30 +29,32 @@ const (
 
 type TCPClientInterface struct {
 	BaseInterface
-	conn          net.Conn
-	targetAddr    string
-	targetPort    int
-	kissFraming   bool
-	i2pTunneled   bool
-	initiator     bool
-	reconnecting  bool
-	neverConnected bool
-	writing       bool
+	conn              net.Conn
+	targetAddr        string
+	targetPort        int
+	kissFraming       bool
+	i2pTunneled       bool
+	initiator         bool
+	reconnecting      bool
+	neverConnected    bool
+	writing           bool
 	maxReconnectTries int
-	packetBuffer []byte
-	packetType   byte
-	packetCallback common.PacketCallback
+	packetBuffer      []byte
+	packetType        byte
+	packetCallback    common.PacketCallback
+	mutex             sync.RWMutex
+	detached          bool
 }
 
 func NewTCPClient(name string, targetAddr string, targetPort int, kissFraming bool, i2pTunneled bool) (*TCPClientInterface, error) {
 	tc := &TCPClientInterface{
 		BaseInterface: BaseInterface{
-			BaseInterface: common.BaseInterface{
-				Name:    name,
-				Mode:    common.IF_MODE_FULL,
-				MTU:     1064,
-				Bitrate: 10000000, // 10Mbps estimate
-			},
+			name:     name,
+			mode:     common.IF_MODE_FULL,
+			ifType:   common.IF_TYPE_TCP,
+			online:   false,
+			mtu:      1064,
+			detached: false,
 		},
 		targetAddr:  targetAddr,
 		targetPort:  targetPort,
@@ -285,137 +288,60 @@ func (tc *TCPClientInterface) GetName() string {
 	return tc.Name
 }
 
-type TCPServerInterface struct {
-	BaseInterface
-	server       net.Listener
-	bindAddr     string
-	bindPort     int
-	preferIPv6   bool
-	i2pTunneled  bool
-	spawned      []*TCPClientInterface
-	spawnedMutex sync.RWMutex
-	packetCallback func([]byte, interface{})
+func (tc *TCPClientInterface) GetPacketCallback() common.PacketCallback {
+	tc.mutex.RLock()
+	defer tc.mutex.RUnlock()
+	return tc.packetCallback
 }
 
-func NewTCPServer(name string, bindAddr string, bindPort int, preferIPv6 bool, i2pTunneled bool) (*TCPServerInterface, error) {
+func (tc *TCPClientInterface) IsDetached() bool {
+	tc.mutex.RLock()
+	defer tc.mutex.RUnlock()
+	return tc.detached
+}
+
+func (tc *TCPClientInterface) IsOnline() bool {
+	tc.mutex.RLock()
+	defer tc.mutex.RUnlock()
+	return tc.online
+}
+
+type TCPServerInterface struct {
+	BaseInterface
+	listener       net.Listener
+	connections    map[string]net.Conn
+	mutex          sync.RWMutex
+	bindAddr       string
+	bindPort       int
+	preferIPv6     bool
+	spawned        bool
+	port           int
+	host           string
+	kissFraming    bool
+	i2pTunneled    bool
+	packetCallback common.PacketCallback
+	detached       bool
+}
+
+func NewTCPServer(name string, bindAddr string, bindPort int, kissFraming bool, i2pTunneled bool, preferIPv6 bool) (*TCPServerInterface, error) {
 	ts := &TCPServerInterface{
 		BaseInterface: BaseInterface{
-			BaseInterface: common.BaseInterface{
-				Name:    name,
-				Mode:    common.IF_MODE_FULL,
-				Type:    common.IF_TYPE_TCP,
-				MTU:     1064,
-				Bitrate: 10000000,
-			},
+			name:     name,
+			mode:     common.IF_MODE_FULL,
+			ifType:   common.IF_TYPE_TCP,
+			online:   false,
+			mtu:      common.DEFAULT_MTU,
+			detached: false,
 		},
+		connections: make(map[string]net.Conn),
 		bindAddr:    bindAddr,
 		bindPort:    bindPort,
 		preferIPv6:  preferIPv6,
+		kissFraming: kissFraming,
 		i2pTunneled: i2pTunneled,
-		spawned:     make([]*TCPClientInterface, 0),
 	}
-
-	// Resolve bind address
-	var addr string
-	if ts.bindAddr == "" {
-		if ts.preferIPv6 {
-			addr = fmt.Sprintf("[::0]:%d", ts.bindPort)
-		} else {
-			addr = fmt.Sprintf("0.0.0.0:%d", ts.bindPort)
-		}
-	} else {
-		addr = fmt.Sprintf("%s:%d", ts.bindAddr, ts.bindPort)
-	}
-
-	// Create listener
-	var err error
-	ts.server, err = net.Listen("tcp", addr)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create TCP listener: %v", err)
-	}
-
-	ts.Online = true
-	ts.IN = true
-
-	// Start accept loop
-	go ts.acceptLoop()
 
 	return ts, nil
-}
-
-func (ts *TCPServerInterface) acceptLoop() {
-	for {
-		conn, err := ts.server.Accept()
-		if err != nil {
-			if !ts.Detached {
-				continue
-			}
-			return
-		}
-
-		// Create new client interface for this connection
-		client := &TCPClientInterface{
-			BaseInterface: BaseInterface{
-				BaseInterface: common.BaseInterface{
-					Name:    fmt.Sprintf("Client-%s-%s", ts.Name, conn.RemoteAddr()),
-					Mode:    ts.Mode,
-					Type:    common.IF_TYPE_TCP,
-					MTU:     ts.MTU,
-					Bitrate: ts.Bitrate,
-				},
-			},
-			conn:        conn,
-			i2pTunneled: ts.i2pTunneled,
-		}
-
-		// Configure TCP options
-		if tcpConn, ok := conn.(*net.TCPConn); ok {
-			tcpConn.SetNoDelay(true)
-			tcpConn.SetKeepAlive(true)
-			tcpConn.SetKeepAlivePeriod(time.Duration(TCP_PROBE_INTERVAL) * time.Second)
-		}
-
-		client.Online = true
-		client.IN = ts.IN
-		client.OUT = ts.OUT
-
-		// Add to spawned interfaces
-		ts.spawnedMutex.Lock()
-		ts.spawned = append(ts.spawned, client)
-		ts.spawnedMutex.Unlock()
-
-		// Start client read loop
-		go client.readLoop()
-	}
-}
-
-func (ts *TCPServerInterface) Detach() {
-	ts.BaseInterface.Detach()
-	
-	if ts.server != nil {
-		ts.server.Close()
-	}
-
-	ts.spawnedMutex.Lock()
-	for _, client := range ts.spawned {
-		client.Detach()
-	}
-	ts.spawned = nil
-	ts.spawnedMutex.Unlock()
-}
-
-func (ts *TCPServerInterface) ProcessOutgoing(data []byte) error {
-	ts.spawnedMutex.RLock()
-	defer ts.spawnedMutex.RUnlock()
-
-	var lastErr error
-	for _, client := range ts.spawned {
-		if err := client.ProcessOutgoing(data); err != nil {
-			lastErr = err
-		}
-	}
-
-	return lastErr
 }
 
 func (ts *TCPServerInterface) String() string {
@@ -424,20 +350,40 @@ func (ts *TCPServerInterface) String() string {
 		if ts.preferIPv6 {
 			addr = "[::0]"
 		} else {
-			addr = "0.0.0.0" 
+			addr = "0.0.0.0"
 		}
 	}
-	return fmt.Sprintf("TCPServerInterface[%s/%s:%d]", ts.Name, addr, ts.bindPort)
+	return fmt.Sprintf("TCPServerInterface[%s/%s:%d]", ts.name, addr, ts.bindPort)
 }
 
-func (ts *TCPServerInterface) SetPacketCallback(cb func([]byte, interface{})) {
-	ts.packetCallback = cb
+func (ts *TCPServerInterface) SetPacketCallback(callback common.PacketCallback) {
+	ts.mutex.Lock()
+	defer ts.mutex.Unlock()
+	ts.packetCallback = callback
+}
+
+func (ts *TCPServerInterface) GetPacketCallback() common.PacketCallback {
+	ts.mutex.RLock()
+	defer ts.mutex.RUnlock()
+	return ts.packetCallback
 }
 
 func (ts *TCPServerInterface) IsEnabled() bool {
-	return ts.Online
+	return ts.online
 }
 
 func (ts *TCPServerInterface) GetName() string {
-	return ts.Name
-} 
+	return ts.name
+}
+
+func (ts *TCPServerInterface) IsDetached() bool {
+	ts.mutex.RLock()
+	defer ts.mutex.RUnlock()
+	return ts.detached
+}
+
+func (ts *TCPServerInterface) IsOnline() bool {
+	ts.mutex.RLock()
+	defer ts.mutex.RUnlock()
+	return ts.online
+}

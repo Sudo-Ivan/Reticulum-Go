@@ -1,64 +1,110 @@
 package packet
 
 import (
+	"crypto/rand"
 	"encoding/binary"
 	"errors"
 )
 
 const (
-	HeaderSize    = 2
-	AddressSize   = 16
-	ContextSize   = 1
-	MaxDataSize   = 465 // Maximum size of payload data
+	// Packet Types
+	PacketTypeData       = 0x00
+	PacketTypeAnnounce   = 0x01
+	PacketTypeLink       = 0x02
+	PacketTypeProof      = 0x03
+	PACKET_TYPE_DATA     = 0x00
+	PACKET_TYPE_LINK     = 0x01
+	PACKET_TYPE_IDENTIFY = 0x02
+
+	// Sizes
+	HeaderSize     = 2
+	AddressSize    = 16
+	ContextSize    = 1
+	MaxDataSize    = 465
+	RandomBlobSize = 16
 )
 
 // Header flags and types
 const (
 	// First byte flags
-	IFACFlag         = 0x80 // Interface authentication code flag
-	HeaderTypeFlag   = 0x40 // Header type flag
-	ContextFlag      = 0x20 // Context flag
-	PropagationFlags = 0x18 // Propagation type flags (bits 3-4)
-	DestinationFlags = 0x06 // Destination type flags (bits 1-2)
-	PacketTypeFlags  = 0x01 // Packet type flags (bit 0)
+	IFACFlag         = 0x80
+	HeaderTypeFlag   = 0x40
+	ContextFlag      = 0x20
+	PropagationFlags = 0x18
+	DestinationFlags = 0x06
+	PacketTypeFlags  = 0x01
 
 	// Second byte
-	HopsField = 0xFF // Number of hops (entire byte)
+	HopsField = 0xFF
 )
 
 type Packet struct {
-	Header      [2]byte
-	Addresses   []byte // Either 16 or 32 bytes depending on header type
-	Context     byte
-	Data        []byte
-	AccessCode  []byte // Optional: Only present if IFAC flag is set
+	Header     [2]byte
+	Addresses  []byte
+	Context    byte
+	Data       []byte
+	AccessCode []byte
+	RandomBlob []byte
 }
 
-func NewPacket(headerType, propagationType, destinationType, packetType byte, hops byte) *Packet {
+func NewAnnouncePacket(destHash []byte, publicKey []byte, appData []byte) (*Packet, error) {
 	p := &Packet{
-		Header:    [2]byte{0, hops},
-		Addresses: make([]byte, 0),
-		Data:     make([]byte, 0),
+		Header:    [2]byte{0, 0}, // Start with 0 hops
+		Addresses: make([]byte, AddressSize),
+		Data:      make([]byte, 0, MaxDataSize),
 	}
 
-	// Set header type
-	if headerType == HeaderType2 {
-		p.Header[0] |= HeaderTypeFlag
-		p.Addresses = make([]byte, 2*AddressSize) // Two address fields
-	} else {
-		p.Addresses = make([]byte, AddressSize) // One address field
+	// Set header flags for announce packet
+	p.Header[0] |= HeaderTypeFlag                                 // Single address
+	p.Header[0] |= (PropagationBroadcast << 3) & PropagationFlags // Broadcast
+	p.Header[0] |= (DestinationSingle << 1) & DestinationFlags    // Single destination
+	p.Header[0] |= PacketTypeAnnounce & PacketTypeFlags           // Announce type
+
+	// Set destination hash
+	if len(destHash) != AddressSize {
+		return nil, errors.New("invalid destination hash size")
+	}
+	copy(p.Addresses, destHash)
+
+	// Build announce data
+	// Public key
+	p.Data = append(p.Data, publicKey...)
+
+	// App data length and content
+	appDataLen := make([]byte, 2)
+	binary.BigEndian.PutUint16(appDataLen, uint16(len(appData)))
+	p.Data = append(p.Data, appDataLen...)
+	p.Data = append(p.Data, appData...)
+
+	// Add random blob
+	randomBlob := make([]byte, RandomBlobSize)
+	if _, err := rand.Read(randomBlob); err != nil {
+		return nil, err
+	}
+	p.RandomBlob = randomBlob
+	p.Data = append(p.Data, randomBlob...)
+
+	return p, nil
+}
+
+func NewPacket(packetType byte, flags byte, hops byte, destKey []byte, data []byte) (*Packet, error) {
+	if len(destKey) != AddressSize {
+		return nil, errors.New("invalid destination key length")
 	}
 
-	// Set propagation type
-	p.Header[0] |= (propagationType << 3) & PropagationFlags
+	p := &Packet{
+		Header:    [2]byte{flags, hops},
+		Addresses: make([]byte, AddressSize),
+		Data:      data,
+	}
 
-	// Set destination type
-	p.Header[0] |= (destinationType << 1) & DestinationFlags
-
-	// Set packet type
+	// Set packet type in flags
 	p.Header[0] |= packetType & PacketTypeFlags
 
-	return p
+	// Copy destination address
+	copy(p.Addresses, destKey)
+
+	return p, nil
 }
 
 func (p *Packet) SetAccessCode(code []byte) {
@@ -83,12 +129,12 @@ func (p *Packet) SetAddress(index int, address []byte) error {
 	if len(address) != AddressSize {
 		return errors.New("invalid address size")
 	}
-	
+
 	offset := index * AddressSize
 	if offset+AddressSize > len(p.Addresses) {
 		return errors.New("address index out of range")
 	}
-	
+
 	copy(p.Addresses[offset:], address)
 	return nil
 }
@@ -168,4 +214,4 @@ func ParsePacket(data []byte) (*Packet, error) {
 	copy(p.Data, data[offset:])
 
 	return p, nil
-} 
+}

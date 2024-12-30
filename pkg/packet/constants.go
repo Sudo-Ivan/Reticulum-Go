@@ -3,10 +3,10 @@ package packet
 const (
 	// MTU constants
 	EncryptedMDU = 383 // Maximum size of payload data in encrypted packet
-	PlainMDU    = 464 // Maximum size of payload data in unencrypted packet
+	PlainMDU     = 464 // Maximum size of payload data in unencrypted packet
 
 	// Header Types
-	HeaderType1 = 0 // Two byte header, one 16 byte address field  
+	HeaderType1 = 0 // Two byte header, one 16 byte address field
 	HeaderType2 = 1 // Two byte header, two 16 byte address fields
 
 	// Propagation Types
@@ -24,4 +24,4 @@ const (
 	PacketAnnounce    = 1
 	PacketLinkRequest = 2
 	PacketProof       = 3
-) 
+)

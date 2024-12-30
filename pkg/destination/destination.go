@@ -314,9 +314,15 @@ func (d *Destination) Encrypt(plaintext []byte) ([]byte, error) {
 
 	switch d.destType {
 	case SINGLE:
-		return d.identity.Encrypt(plaintext, nil)
+		// For single destination, we need the recipient's public key
+		recipientKey := d.identity.GetPublicKey()
+		return d.identity.Encrypt(plaintext, recipientKey)
 	case GROUP:
-		return d.identity.EncryptSymmetric(plaintext)
+		key := d.identity.GetCurrentRatchetKey()
+		if key == nil {
+			return nil, errors.New("no ratchet key available")
+		}
+		return d.identity.EncryptSymmetric(plaintext, key)
 	default:
 		return nil, errors.New("unsupported destination type for encryption")
 	}
@@ -333,9 +339,13 @@ func (d *Destination) Decrypt(ciphertext []byte) ([]byte, error) {
 
 	switch d.destType {
 	case SINGLE:
-		return d.identity.Decrypt(ciphertext, nil)
+		return d.identity.Decrypt(ciphertext)
 	case GROUP:
-		return d.identity.DecryptSymmetric(ciphertext)
+		key := d.identity.GetCurrentRatchetKey()
+		if key == nil {
+			return nil, errors.New("no ratchet key available")
+		}
+		return d.identity.DecryptSymmetric(ciphertext, key)
 	default:
 		return nil, errors.New("unsupported destination type for decryption")
 	}
@@ -347,4 +357,15 @@ func (d *Destination) Sign(data []byte) ([]byte, error) {
 	}
 	signature := d.identity.Sign(data)
 	return signature, nil
+}
+
+func (d *Destination) GetPublicKey() []byte {
+	if d.identity == nil {
+		return nil
+	}
+	return d.identity.GetPublicKey()
+}
+
+func (d *Destination) GetIdentity() *identity.Identity {
+	return d.identity
 } 

@@ -60,8 +60,9 @@ func (r *Reticulum) Start() error {
 				ifaceConfig.Name,
 				ifaceConfig.Address,
 				ifaceConfig.Port,
-				ifaceConfig.PreferIPv6,
+				ifaceConfig.KISSFraming,
 				ifaceConfig.I2PTunneled,
+				ifaceConfig.PreferIPv6,
 			)
 			if err != nil {
 				log.Printf("Failed to create TCP server interface %s: %v", ifaceConfig.Name, err)
