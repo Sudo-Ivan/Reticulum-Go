@@ -456,4 +456,150 @@ func SendAnnounce(packet []byte) error {
 	}
 	
 	return lastErr
+}
+
+func (t *Transport) HandlePacket(data []byte, iface interface{}) {
+	if len(data) < 1 {
+		return
+	}
+
+	packetType := data[0]
+	switch packetType {
+	case 0x01: // Path Request
+		t.handlePathRequest(data[1:], iface)
+	case 0x02: // Link Packet
+		t.handleLinkPacket(data[1:], iface)
+	case 0x03: // Path Response
+		t.handlePathResponse(data[1:], iface)
+	case 0x04: // Announce
+		t.handleAnnouncePacket(data[1:], iface)
+	}
+}
+
+func (t *Transport) handlePathRequest(data []byte, iface interface{}) {
+	if len(data) < 33 { // 32 bytes hash + 1 byte TTL minimum
+		return
+	}
+
+	destHash := data[:32]
+	ttl := data[32]
+	var tag []byte
+	recursive := false
+
+	if len(data) > 33 {
+		tag = data[33:len(data)-1]
+		recursive = data[len(data)-1] == 0x01
+	}
+
+	// Check if we have a path to the destination
+	if t.HasPath(destHash) {
+		// Create and send path response
+		hops := t.HopsTo(destHash)
+		nextHop := t.NextHop(destHash)
+		
+		response := make([]byte, 0, 64)
+		response = append(response, 0x03) // Path Response type
+		response = append(response, destHash...)
+		response = append(response, byte(hops))
+		response = append(response, nextHop...)
+		if len(tag) > 0 {
+			response = append(response, tag...)
+		}
+
+		if i, ok := iface.(common.NetworkInterface); ok {
+			i.Send(response, "")
+		}
+	} else if recursive && ttl > 0 {
+		// Forward path request to other interfaces
+		newData := make([]byte, len(data))
+		copy(newData, data)
+		newData[32] = ttl - 1 // Decrease TTL
+		
+		for name, otherIface := range t.interfaces {
+			if name != iface.(common.NetworkInterface).GetName() && otherIface.IsEnabled() {
+				otherIface.Send(newData, "")
+			}
+		}
+	}
+}
+
+func (t *Transport) handleLinkPacket(data []byte, iface interface{}) {
+	if len(data) < 40 { // 32 bytes dest + 8 bytes timestamp minimum
+		return
+	}
+
+	dest := data[:32]
+	timestamp := binary.BigEndian.Uint64(data[32:40])
+	payload := data[40:]
+
+	// Check if we're the destination
+	if t.HasPath(dest) {
+		nextHop := t.NextHop(dest)
+		nextIface := t.NextHopInterface(dest)
+		
+		if iface, ok := t.interfaces[nextIface]; ok {
+			iface.Send(data, string(nextHop))
+		}
+	}
+
+	// Update timing information
+	if link := t.findLink(dest); link != nil {
+		link.lastInbound = time.Unix(int64(timestamp), 0)
+		if link.packetCb != nil {
+			link.packetCb(payload)
+		}
+	}
+}
+
+func (t *Transport) handlePathResponse(data []byte, iface interface{}) {
+	if len(data) < 33 { // 32 bytes hash + 1 byte hops minimum
+		return
+	}
+
+	destHash := data[:32]
+	hops := data[32]
+	var nextHop []byte
+
+	if len(data) > 33 {
+		nextHop = data[33:]
+	}
+
+	// Update path information
+	if i, ok := iface.(common.NetworkInterface); ok {
+		t.UpdatePath(destHash, nextHop, i.GetName(), hops)
+	}
+}
+
+func (t *Transport) handleAnnouncePacket(data []byte, iface interface{}) {
+	if len(data) < 32 { // 32 bytes minimum for hash
+		return
+	}
+
+	destHash := data[:32]
+	var identity, appData []byte
+
+	if len(data) > 32 {
+		splitPoint := 32
+		for i := 32; i < len(data); i++ {
+			if data[i] == 0x00 {
+				splitPoint = i
+				break
+			}
+		}
+		identity = data[32:splitPoint]
+		if splitPoint < len(data)-1 {
+			appData = data[splitPoint+1:]
+		}
+	}
+
+	t.HandleAnnounce(destHash, identity, appData)
+}
+
+func (t *Transport) findLink(dest []byte) *Link {
+	t.mutex.RLock()
+	defer t.mutex.RUnlock()
+	
+	// This is a simplified version - you might want to maintain a map of active links
+	// in the Transport struct for better performance
+	return nil
 } 

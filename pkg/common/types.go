@@ -4,10 +4,6 @@ import (
 	"time"
 )
 
-// Interface related types
-type InterfaceMode byte
-type InterfaceType byte
-
 // Transport related types
 type TransportMode byte
 type PathStatus byte
@@ -15,8 +11,6 @@ type PathStatus byte
 // Common structs
 type Path struct {
 	Interface    NetworkInterface
-	Address      string
-	Status       PathStatus
 	LastSeen     time.Time
 	NextHop      []byte
 	Hops         uint8

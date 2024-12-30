@@ -66,7 +66,7 @@ Basic Features
     [✓] Basic UDP transport
     [✓] TCP transport
     [ ] Interface discovery
-    [ ] Connection management
+    [✓] Connection management
     [✓] Packet framing
     [✓] Transport integration
 
@@ -89,14 +89,14 @@ Basic Features
 
 Next Immediate Tasks:
 1. [✓] Fix import cycles by creating common package
-2. [ ] Implement Interface discovery
-3. [ ] Implement Connection management
-4. [ ] Test network layer integration end-to-end
-5. [ ] Add error handling for network failures
-6. [ ] Implement interface auto-configuration
-7. [ ] Complete NetworkInterface implementation
-8. [ ] Add comprehensive interface tests
-9. [ ] Implement connection retry logic
+2. [✓] Complete NetworkInterface implementation
+3. [✓] Add comprehensive interface tests
+4. [✓] Implement connection retry logic
+5. [✓] Add client reconnection handling
+6. [ ] Implement Interface discovery
+7. [ ] Test network layer integration end-to-end
+8. [ ] Add error handling for network failures
+9. [ ] Implement interface auto-configuration
 10. [ ] Add metrics collection for interfaces
-11. [ ] Add client reconnection handling
-12. [ ] Implement client-side path caching
+11. [ ] Implement client-side path caching
+12. [ ] Add support for additional transport types

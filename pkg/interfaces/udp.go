@@ -3,11 +3,11 @@ package interfaces
 import (
 	"fmt"
 	"net"
-	"sync"
+	"github.com/Sudo-Ivan/reticulum-go/pkg/common"
 )
 
 type UDPInterface struct {
-	Interface
+	BaseInterface
 	conn *net.UDPConn
 	listenAddr *net.UDPAddr
 	targetAddr *net.UDPAddr
@@ -16,11 +16,14 @@ type UDPInterface struct {
 
 func NewUDPInterface(name string, listenAddr string, targetAddr string) (*UDPInterface, error) {
 	ui := &UDPInterface{
-		Interface: Interface{
-			Name: name,
-			Mode: MODE_FULL,
-			MTU: 1500,
-			Bitrate: 100000000, // 100Mbps estimate for UDP
+		BaseInterface: BaseInterface{
+			BaseInterface: common.BaseInterface{
+				Name:    name,
+				Mode:    common.IF_MODE_FULL,
+				Type:    common.IF_TYPE_UDP,
+				MTU:     1500,
+				Bitrate: 100000000, // 100Mbps estimate
+			},
 		},
 		readBuffer: make([]byte, 65535),
 	}
@@ -39,7 +42,7 @@ func NewUDPInterface(name string, listenAddr string, targetAddr string) (*UDPInt
 			return nil, fmt.Errorf("invalid target address: %v", err)
 		}
 		ui.targetAddr = taddr
-		ui.OUT = true
+		ui.BaseInterface.OUT = true
 	}
 
 	// Create UDP connection
@@ -48,8 +51,8 @@ func NewUDPInterface(name string, listenAddr string, targetAddr string) (*UDPInt
 		return nil, fmt.Errorf("failed to listen on UDP: %v", err)
 	}
 	ui.conn = conn
-	ui.IN = true
-	ui.Online = true
+	ui.BaseInterface.IN = true
+	ui.BaseInterface.Online = true
 
 	// Start read loop
 	go ui.readLoop()
@@ -59,16 +62,22 @@ func NewUDPInterface(name string, listenAddr string, targetAddr string) (*UDPInt
 
 func (ui *UDPInterface) readLoop() {
 	for {
-		if !ui.Online {
+		if !ui.BaseInterface.Online {
 			return
 		}
 
-		n, addr, err := ui.conn.ReadFromUDP(ui.readBuffer)
+		n, remoteAddr, err := ui.conn.ReadFromUDP(ui.readBuffer)
 		if err != nil {
-			if !ui.Detached {
-				// Log error
+			if !ui.BaseInterface.Detached {
+				continue
 			}
-			continue
+			return
+		}
+
+		// If no target address is set, use the first sender's address
+		if ui.targetAddr == nil {
+			ui.targetAddr = remoteAddr
+			ui.BaseInterface.OUT = true
 		}
 
 		// Copy received data
@@ -81,7 +90,7 @@ func (ui *UDPInterface) readLoop() {
 }
 
 func (ui *UDPInterface) ProcessOutgoing(data []byte) error {
-	if !ui.Online || ui.targetAddr == nil {
+	if !ui.BaseInterface.Online || ui.targetAddr == nil {
 		return fmt.Errorf("interface offline or no target address configured")
 	}
 
@@ -90,13 +99,17 @@ func (ui *UDPInterface) ProcessOutgoing(data []byte) error {
 		return fmt.Errorf("UDP write failed: %v", err)
 	}
 
-	ui.Interface.ProcessOutgoing(data)
+	ui.BaseInterface.ProcessOutgoing(data)
 	return nil
 }
 
 func (ui *UDPInterface) Detach() {
-	ui.Interface.Detach()
+	ui.BaseInterface.Detach()
 	if ui.conn != nil {
 		ui.conn.Close()
 	}
+}
+
+func (ui *UDPInterface) GetConn() net.Conn {
+	return ui.conn
 } 

@@ -22,7 +22,7 @@ func DefaultConfig() *common.ReticulumConfig {
 		 InstanceControlPort:  DefaultInstanceControlPort,
 		PanicOnInterfaceErr: false,
 		LogLevel:            DefaultLogLevel,
-		Interfaces:          make(map[string]common.InterfaceConfig),
+		Interfaces:          make(map[string]*common.InterfaceConfig),
 	}
 }
 
@@ -75,17 +75,17 @@ func CreateDefaultConfig(path string) error {
 	cfg := DefaultConfig()
 
 	// Add default interface
-	cfg.Interfaces["Default Interface"] = common.InterfaceConfig{
+	cfg.Interfaces["Default Interface"] = &common.InterfaceConfig{
 		Type:    "AutoInterface",
 		Enabled: false,
 	}
 
 	// Add default quad4net interface
-	cfg.Interfaces["quad4net tcp"] = common.InterfaceConfig{
+	cfg.Interfaces["quad4net tcp"] = &common.InterfaceConfig{
 		Type:       "TCPClientInterface",
 		Enabled:    true,
 		TargetHost: "rns.quad4.io",
-		TargetPort: 4242,
+		 TargetPort: 4242,
 	}
 
 	data, err := toml.Marshal(cfg)

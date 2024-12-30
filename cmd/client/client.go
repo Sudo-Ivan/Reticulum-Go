@@ -14,13 +14,103 @@ import (
 	"github.com/Sudo-Ivan/reticulum-go/pkg/common"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/identity"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/transport"
-	"github.com/Sudo-Ivan/reticulum-go/pkg/destination"
+	"github.com/Sudo-Ivan/reticulum-go/pkg/interfaces"
 )
 
 var (
 	configPath = flag.String("config", "", "Path to config file")
 	targetHash = flag.String("target", "", "Target destination hash")
+	generateIdentity = flag.Bool("generate-identity", false, "Generate a new identity and print its hash")
 )
+
+type Client struct {
+	config     *common.ReticulumConfig
+	transport  *transport.Transport
+	interfaces []common.NetworkInterface
+}
+
+func NewClient(cfg *common.ReticulumConfig) (*Client, error) {
+	if cfg == nil {
+		var err error
+		cfg, err = config.InitConfig()
+		if err != nil {
+			return nil, fmt.Errorf("failed to initialize config: %v", err)
+		}
+	}
+
+	t, err := transport.NewTransport(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize transport: %v", err)
+	}
+
+	return &Client{
+		config:     cfg,
+		transport:  t,
+		interfaces: make([]common.NetworkInterface, 0),
+	}, nil
+}
+
+func (c *Client) Start() error {
+	for _, ifaceConfig := range c.config.Interfaces {
+		var iface common.NetworkInterface
+
+		switch ifaceConfig.Type {
+		case "tcp":
+			client, err := interfaces.NewTCPClient(
+				ifaceConfig.Name,
+				ifaceConfig.Address,
+				ifaceConfig.Port,
+				ifaceConfig.KISSFraming,
+				ifaceConfig.I2PTunneled,
+			)
+			if err != nil {
+				log.Printf("Failed to create TCP interface %s: %v", ifaceConfig.Name, err)
+				continue
+			}
+			
+			// Convert callback type to match interface
+			callback := func(data []byte, iface interface{}) {
+				c.transport.HandlePacket(data, iface)
+			}
+			client.SetPacketCallback(common.PacketCallback(callback))
+			iface = client
+
+		case "udp":
+			addr := fmt.Sprintf("%s:%d", ifaceConfig.Address, ifaceConfig.Port)
+			udp, err := interfaces.NewUDPInterface(
+				ifaceConfig.Name,
+				addr,
+				"", // No target address for client initially
+			)
+			if err != nil {
+				log.Printf("Failed to create UDP interface %s: %v", ifaceConfig.Name, err)
+				continue
+			}
+			
+			// Convert callback type to match interface
+			callback := func(data []byte, iface interface{}) {
+				c.transport.HandlePacket(data, iface)
+			}
+			udp.SetPacketCallback(common.PacketCallback(callback))
+			iface = udp
+
+		default:
+			log.Printf("Unknown interface type: %s", ifaceConfig.Type)
+			continue
+		}
+
+		c.interfaces = append(c.interfaces, iface)
+	}
+
+	return nil
+}
+
+func (c *Client) Stop() {
+	for _, iface := range c.interfaces {
+		iface.Detach()
+	}
+	c.transport.Close()
+}
 
 func main() {
 	flag.Parse()
@@ -30,83 +120,30 @@ func main() {
 
 	if *configPath == "" {
 		cfg, err = config.InitConfig()
-		if err != nil {
-			log.Fatalf("Failed to initialize config: %v", err)
-		}
 	} else {
 		cfg, err = config.LoadConfig(*configPath)
-		if err != nil {
-			log.Fatalf("Failed to load config: %v", err)
-		}
 	}
-
-	// Enable transport by default for client
-	cfg.EnableTransport = true
-
-	// Initialize transport
-	transport, err := transport.NewTransport(cfg)
 	if err != nil {
-		log.Fatalf("Failed to initialize transport: %v", err)
+		log.Fatalf("Failed to load config: %v", err)
 	}
-	defer transport.Close()
 
-	// If target specified, establish connection
-	if *targetHash != "" {
-		destHash, err := identity.HashFromHex(*targetHash)
+	if *generateIdentity {
+		id, err := identity.New()
 		if err != nil {
-			log.Fatalf("Invalid destination hash: %v", err)
+			log.Fatalf("Failed to generate identity: %v", err)
 		}
-
-		// Request path if needed
-		if !transport.HasPath(destHash) {
-			fmt.Println("Requesting path to destination...")
-			if err := transport.RequestPath(destHash, "", nil, true); err != nil {
-				log.Fatalf("Failed to request path: %v", err)
-			}
-		}
-
-		// Get destination identity
-		destIdentity, err := identity.Recall(destHash)
-		if err != nil {
-			log.Fatalf("Failed to recall identity: %v", err)
-		}
-
-		// Create destination
-		dest, err := destination.New(
-			destIdentity,
-			destination.OUT,
-			destination.SINGLE,
-			"client",
-			"direct",
-		)
-		if err != nil {
-			log.Fatalf("Failed to create destination: %v", err)
-		}
-
-		// Enable and configure ratchets
-		dest.SetRetainedRatchets(destination.RATCHET_COUNT)
-		dest.SetRatchetInterval(destination.RATCHET_INTERVAL)
-		dest.EnforceRatchets()
-
-		// Create link
-		link := transport.NewLink(dest.Hash(), func() {
-			fmt.Println("Link established")
-		}, func() {
-			fmt.Println("Link closed")
-		})
-
-		defer link.Teardown()
-
-		// Set packet callback
-		link.SetPacketCallback(func(data []byte) {
-			fmt.Printf("Received: %s\n", string(data))
-		})
-
-		// Start interactive loop
-		go interactiveLoop(link)
-	} else {
-		fmt.Println("No target specified. Use -target <hash> to connect to a destination")
+		fmt.Printf("Identity hash: %s\n", id.Hex())
 		return
+	}
+
+	client, err := NewClient(cfg)
+	if err != nil {
+		log.Fatalf("Failed to create client: %v", err)
+	}
+	defer client.Stop()
+
+	if err := client.Start(); err != nil {
+		log.Fatalf("Failed to start client: %v", err)
 	}
 
 	// Wait for interrupt
@@ -134,4 +171,4 @@ func interactiveLoop(link *transport.Link) {
 			fmt.Printf("Failed to send: %v\n", err)
 		}
 	}
-} 
+}

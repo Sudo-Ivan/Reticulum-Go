@@ -6,17 +6,18 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/Sudo-Ivan/reticulum-go/pkg/common"
 	"github.com/Sudo-Ivan/reticulum-go/internal/config"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/transport"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/interfaces"
 )
 
 type Reticulum struct {
-	config    *config.ReticulumConfig
+	config    *common.ReticulumConfig
 	transport *transport.Transport
 }
 
-func NewReticulum(cfg *config.ReticulumConfig) (*Reticulum, error) {
+func NewReticulum(cfg *common.ReticulumConfig) (*Reticulum, error) {
 	if cfg == nil {
 		cfg = config.DefaultConfig()
 	}

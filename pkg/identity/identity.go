@@ -427,4 +427,12 @@ func (i *Identity) DecryptSymmetric(ciphertext []byte) ([]byte, error) {
 	}
 	
 	return plaintext, nil
+}
+
+func (i *Identity) Hash() []byte {
+	return TruncatedHash(i.publicKey)
+}
+
+func (i *Identity) Hex() string {
+	return hex.EncodeToString(i.Hash())
 } 

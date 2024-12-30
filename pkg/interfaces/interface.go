@@ -2,32 +2,40 @@ package interfaces
 
 import (
 	"fmt"
-	"sync"
 	"time"
 	"encoding/binary"
+	"net"
 
 	"github.com/Sudo-Ivan/reticulum-go/pkg/common"
 )
 
 const (
 	BITRATE_MINIMUM = 5 // Minimum required bitrate in bits/sec
+	MODE_FULL      = 0x01
 )
 
-// BaseInterface embeds common.BaseInterface and implements common.Interface
+type Interface interface {
+	common.NetworkInterface
+	Send(data []byte, target string) error
+	Detach()
+	IsEnabled() bool
+	GetName() string
+}
+
 type BaseInterface struct {
 	common.BaseInterface
 }
 
 func (i *BaseInterface) SetPacketCallback(callback common.PacketCallback) {
-	i.mutex.Lock()
-	defer i.mutex.Unlock()
-	i.packetCallback = callback
+	i.Mutex.Lock()
+	defer i.Mutex.Unlock()
+	i.PacketCallback = callback
 }
 
 func (i *BaseInterface) ProcessIncoming(data []byte) {
-	i.mutex.RLock()
-	callback := i.packetCallback
-	i.mutex.RUnlock()
+	i.Mutex.RLock()
+	callback := i.PacketCallback
+	i.Mutex.RUnlock()
 	
 	if callback != nil {
 		callback(data, i)
@@ -42,8 +50,8 @@ func (i *BaseInterface) ProcessOutgoing(data []byte) error {
 }
 
 func (i *BaseInterface) Detach() {
-	i.mutex.Lock()
-	defer i.mutex.Unlock()
+	i.Mutex.Lock()
+	defer i.Mutex.Unlock()
 	i.Detached = true
 	i.Online = false
 }
@@ -76,4 +84,44 @@ func (i *BaseInterface) SendLinkPacket(dest []byte, data []byte, timestamp time.
 	frame = append(frame, data...)
 
 	return i.ProcessOutgoing(frame)
+}
+
+func (i *BaseInterface) Start() error {
+	return nil
+}
+
+func (i *BaseInterface) Stop() error {
+	return nil
+}
+
+func (i *BaseInterface) Send(data []byte, address string) error {
+	return i.ProcessOutgoing(data)
+}
+
+func (i *BaseInterface) Receive() ([]byte, string, error) {
+	return nil, "", nil
+}
+
+func (i *BaseInterface) GetType() common.InterfaceType {
+	return i.Type
+}
+
+func (i *BaseInterface) GetMode() common.InterfaceMode {
+	return i.Mode
+}
+
+func (i *BaseInterface) GetMTU() int {
+	return i.MTU
+}
+
+func (i *BaseInterface) GetName() string {
+	return i.Name
+}
+
+func (i *BaseInterface) GetConn() net.Conn {
+	return nil
+}
+
+func (i *BaseInterface) IsEnabled() bool {
+	return i.Online && !i.Detached
 } 

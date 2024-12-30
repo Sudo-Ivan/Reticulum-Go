@@ -5,6 +5,7 @@ import (
 	"net"
 	"sync"
 	"time"
+	"github.com/Sudo-Ivan/reticulum-go/pkg/common"
 )
 
 const (
@@ -26,7 +27,7 @@ const (
 )
 
 type TCPClientInterface struct {
-	Interface
+	BaseInterface
 	conn          net.Conn
 	targetAddr    string
 	targetPort    int
@@ -39,15 +40,18 @@ type TCPClientInterface struct {
 	maxReconnectTries int
 	packetBuffer []byte
 	packetType   byte
+	packetCallback func([]byte, interface{})
 }
 
 func NewTCPClient(name string, targetAddr string, targetPort int, kissFraming bool, i2pTunneled bool) (*TCPClientInterface, error) {
 	tc := &TCPClientInterface{
-		Interface: Interface{
-			Name: name,
-			Mode: MODE_FULL,
-			MTU:  1064,
-			Bitrate: 10000000, // 10Mbps estimate
+		BaseInterface: BaseInterface{
+			BaseInterface: common.BaseInterface{
+				Name:    name,
+				Mode:    common.IF_MODE_FULL,
+				MTU:     1064,
+				Bitrate: 10000000, // 10Mbps estimate
+			},
 		},
 		targetAddr:  targetAddr,
 		targetPort:  targetPort,
@@ -195,12 +199,12 @@ func (tc *TCPClientInterface) handlePacket(data []byte) {
 
 	switch packetType {
 	case 0x01: // Path request
-		tc.Interface.ProcessIncoming(payload)
+		tc.BaseInterface.ProcessIncoming(payload)
 	case 0x02: // Link packet
 		if len(payload) < 40 { // minimum size for link packet
 			return
 		}
-		tc.Interface.ProcessIncoming(payload)
+		tc.BaseInterface.ProcessIncoming(payload)
 	default:
 		// Unknown packet type
 		return
@@ -229,7 +233,7 @@ func (tc *TCPClientInterface) ProcessOutgoing(data []byte) error {
 		return fmt.Errorf("write failed: %v", err)
 	}
 
-	tc.Interface.ProcessOutgoing(data)
+	tc.BaseInterface.ProcessOutgoing(data)
 	return nil
 }
 
@@ -269,29 +273,45 @@ func escapeKISS(data []byte) []byte {
 	return escaped
 }
 
-type TCPServerInterface struct {
-	Interface
-	server            net.Listener
-	bindAddr          string
-	bindPort          int
-	i2pTunneled      bool
-	preferIPv6       bool
-	spawned          []*TCPClientInterface
-	spawnedMutex     sync.RWMutex
+func (tc *TCPClientInterface) SetPacketCallback(cb func([]byte, interface{})) {
+	tc.packetCallback = cb
 }
 
-func NewTCPServer(name string, bindAddr string, bindPort int, i2pTunneled bool, preferIPv6 bool) (*TCPServerInterface, error) {
+func (tc *TCPClientInterface) IsEnabled() bool {
+	return tc.Online
+}
+
+func (tc *TCPClientInterface) GetName() string {
+	return tc.Name
+}
+
+type TCPServerInterface struct {
+	BaseInterface
+	server       net.Listener
+	bindAddr     string
+	bindPort     int
+	preferIPv6   bool
+	i2pTunneled  bool
+	spawned      []*TCPClientInterface
+	spawnedMutex sync.RWMutex
+	packetCallback func([]byte, interface{})
+}
+
+func NewTCPServer(name string, bindAddr string, bindPort int, preferIPv6 bool, i2pTunneled bool) (*TCPServerInterface, error) {
 	ts := &TCPServerInterface{
-		Interface: Interface{
-			Name: name,
-			Mode: MODE_FULL,
-			MTU:  1064,
-			Bitrate: 10000000, // 10Mbps estimate
+		BaseInterface: BaseInterface{
+			BaseInterface: common.BaseInterface{
+				Name:    name,
+				Mode:    common.IF_MODE_FULL,
+				Type:    common.IF_TYPE_TCP,
+				MTU:     1064,
+				Bitrate: 10000000,
+			},
 		},
 		bindAddr:    bindAddr,
 		bindPort:    bindPort,
-		i2pTunneled: i2pTunneled,
 		preferIPv6:  preferIPv6,
+		i2pTunneled: i2pTunneled,
 		spawned:     make([]*TCPClientInterface, 0),
 	}
 
@@ -328,7 +348,6 @@ func (ts *TCPServerInterface) acceptLoop() {
 		conn, err := ts.server.Accept()
 		if err != nil {
 			if !ts.Detached {
-				// Log error and continue accepting
 				continue
 			}
 			return
@@ -336,10 +355,14 @@ func (ts *TCPServerInterface) acceptLoop() {
 
 		// Create new client interface for this connection
 		client := &TCPClientInterface{
-			Interface: Interface{
-				Name: fmt.Sprintf("Client-%s-%s", ts.Name, conn.RemoteAddr()),
-				Mode: ts.Mode,
-				MTU:  ts.MTU,
+			BaseInterface: BaseInterface{
+				BaseInterface: common.BaseInterface{
+					Name:    fmt.Sprintf("Client-%s-%s", ts.Name, conn.RemoteAddr()),
+					Mode:    ts.Mode,
+					Type:    common.IF_TYPE_TCP,
+					MTU:     ts.MTU,
+					Bitrate: ts.Bitrate,
+				},
 			},
 			conn:        conn,
 			i2pTunneled: ts.i2pTunneled,
@@ -367,7 +390,7 @@ func (ts *TCPServerInterface) acceptLoop() {
 }
 
 func (ts *TCPServerInterface) Detach() {
-	ts.Interface.Detach()
+	ts.BaseInterface.Detach()
 	
 	if ts.server != nil {
 		ts.server.Close()
@@ -405,4 +428,16 @@ func (ts *TCPServerInterface) String() string {
 		}
 	}
 	return fmt.Sprintf("TCPServerInterface[%s/%s:%d]", ts.Name, addr, ts.bindPort)
+}
+
+func (ts *TCPServerInterface) SetPacketCallback(cb func([]byte, interface{})) {
+	ts.packetCallback = cb
+}
+
+func (ts *TCPServerInterface) IsEnabled() bool {
+	return ts.Online
+}
+
+func (ts *TCPServerInterface) GetName() string {
+	return ts.Name
 } 
