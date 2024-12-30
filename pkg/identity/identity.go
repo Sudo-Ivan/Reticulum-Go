@@ -15,6 +15,8 @@ import (
 	"sync"
 	"time"
 
+	"encoding/hex"
+
 	"golang.org/x/crypto/curve25519"
 	"golang.org/x/crypto/hkdf"
 )
@@ -448,19 +450,19 @@ func (i *Identity) DecryptWithHMAC(data []byte, key []byte) ([]byte, error) {
 
 func (i *Identity) ToFile(path string) error {
 	data := map[string]interface{}{
-		"private_key": i.privateKey,
-		"public_key": i.publicKey,
-		"signing_key": i.signingKey,
+		"private_key":      i.privateKey,
+		"public_key":       i.publicKey,
+		"signing_key":      i.signingKey,
 		"verification_key": i.verificationKey,
-		"app_data": i.appData,
+		"app_data":         i.appData,
 	}
-	
+
 	file, err := os.Create(path)
 	if err != nil {
 		return err
 	}
 	defer file.Close()
-	
+
 	return json.NewEncoder(file).Encode(data)
 }
 
@@ -470,22 +472,30 @@ func RecallIdentity(path string) (*Identity, error) {
 		return nil, err
 	}
 	defer file.Close()
-	
+
 	var data map[string]interface{}
 	if err := json.NewDecoder(file).Decode(&data); err != nil {
 		return nil, err
 	}
-	
+
 	// Reconstruct identity from saved data
 	id := &Identity{
-		privateKey: data["private_key"].([]byte),
-		publicKey: data["public_key"].([]byte),
-		signingKey: data["signing_key"].(ed25519.PrivateKey),
+		privateKey:      data["private_key"].([]byte),
+		publicKey:       data["public_key"].([]byte),
+		signingKey:      data["signing_key"].(ed25519.PrivateKey),
 		verificationKey: data["verification_key"].(ed25519.PublicKey),
-		appData: data["app_data"].([]byte),
-		ratchets: make(map[string][]byte),
-		ratchetExpiry: make(map[string]int64),
+		appData:         data["app_data"].([]byte),
+		ratchets:        make(map[string][]byte),
+		ratchetExpiry:   make(map[string]int64),
 	}
-	
+
 	return id, nil
+}
+
+func HashFromString(hash string) ([]byte, error) {
+	if len(hash) != 32 {
+		return nil, fmt.Errorf("invalid hash length: expected 32, got %d", len(hash))
+	}
+
+	return hex.DecodeString(hash)
 }

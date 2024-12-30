@@ -2,6 +2,7 @@ package interfaces
 
 import (
 	"fmt"
+	"log"
 	"net"
 	"sync"
 
@@ -19,9 +20,10 @@ type UDPInterface struct {
 	rxBytes    uint64
 	mtu        int
 	bitrate    int
+	enabled    bool
 }
 
-func NewUDPInterface(name string, addr string, target string) (*UDPInterface, error) {
+func NewUDPInterface(name string, addr string, target string, enabled bool) (*UDPInterface, error) {
 	udpAddr, err := net.ResolveUDPAddr("udp", addr)
 	if err != nil {
 		return nil, err
@@ -36,17 +38,12 @@ func NewUDPInterface(name string, addr string, target string) (*UDPInterface, er
 	}
 
 	ui := &UDPInterface{
-		BaseInterface: BaseInterface{
-			name:     name,
-			mode:     common.IF_MODE_FULL,
-			ifType:   common.IF_TYPE_UDP,
-			online:   false,
-			mtu:      common.DEFAULT_MTU,
-			detached: false,
-		},
-		addr:       udpAddr,
-		targetAddr: targetAddr,
-		readBuffer: make([]byte, common.DEFAULT_MTU),
+		BaseInterface: NewBaseInterface(name, common.IF_TYPE_UDP, enabled),
+		addr:         udpAddr,
+		targetAddr:   targetAddr,
+		readBuffer:   make([]byte, common.DEFAULT_MTU),
+		mtu:         common.DEFAULT_MTU,
+		enabled:     enabled,
 	}
 
 	return ui, nil
@@ -86,29 +83,16 @@ func (ui *UDPInterface) Detach() {
 }
 
 func (ui *UDPInterface) Send(data []byte, addr string) error {
-	if !ui.IsOnline() {
-		return fmt.Errorf("interface offline")
+	if !ui.IsEnabled() {
+		return fmt.Errorf("interface not enabled")
 	}
 
-	targetAddr := ui.targetAddr
-	if addr != "" {
-		var err error
-		targetAddr, err = net.ResolveUDPAddr("udp", addr)
-		if err != nil {
-			return fmt.Errorf("invalid target address: %v", err)
-		}
-	}
-
-	if targetAddr == nil {
+	if ui.targetAddr == nil {
 		return fmt.Errorf("no target address configured")
 	}
 
-	_, err := ui.conn.WriteToUDP(data, targetAddr)
-	if err != nil {
-		return fmt.Errorf("UDP write failed: %v", err)
-	}
-
-	return nil
+	_, err := ui.conn.WriteTo(data, ui.targetAddr)
+	return err
 }
 
 func (ui *UDPInterface) SetPacketCallback(callback common.PacketCallback) {
@@ -172,4 +156,59 @@ func (ui *UDPInterface) GetMTU() int {
 
 func (ui *UDPInterface) GetBitrate() int {
 	return ui.bitrate
+}
+
+func (ui *UDPInterface) Enable() {
+	ui.mutex.Lock()
+	defer ui.mutex.Unlock()
+	ui.online = true
+}
+
+func (ui *UDPInterface) Disable() {
+	ui.mutex.Lock()
+	defer ui.mutex.Unlock()
+	ui.online = false
+}
+
+func (ui *UDPInterface) Start() error {
+	conn, err := net.ListenUDP("udp", ui.addr)
+	if err != nil {
+		return err
+	}
+	ui.conn = conn
+	ui.online = true
+	return nil
+}
+
+func (ui *UDPInterface) readLoop() {
+	buffer := make([]byte, ui.mtu)
+	for {
+		if ui.IsDetached() {
+			return
+		}
+
+		n, addr, err := ui.conn.ReadFromUDP(buffer)
+		if err != nil {
+			if !ui.IsDetached() {
+				log.Printf("UDP read error: %v", err)
+			}
+			return
+		}
+
+		ui.mutex.Lock()
+		ui.rxBytes += uint64(n)
+		ui.mutex.Unlock()
+
+		log.Printf("Received %d bytes from %s", n, addr.String())
+
+		if callback := ui.GetPacketCallback(); callback != nil {
+			callback(buffer[:n], ui)
+		}
+	}
+}
+
+func (ui *UDPInterface) IsEnabled() bool {
+	ui.mutex.RLock()
+	defer ui.mutex.RUnlock()
+	return ui.enabled && ui.online && !ui.detached
 }

@@ -93,16 +93,19 @@ func New(dest *identity.Identity, appData []byte, pathResponse bool) (*Announce,
 func (a *Announce) Propagate(interfaces []common.NetworkInterface) error {
 	packet := a.CreatePacket()
 
-	log.Printf("Propagating announce:")
+	// Enhanced logging
+	log.Printf("Creating announce packet:")
 	log.Printf("  Destination Hash: %x", a.destinationHash)
-	log.Printf("  Public Key: %x", a.identity.GetPublicKey())
+	log.Printf("  Identity Public Key: %x", a.identity.GetPublicKey())
 	log.Printf("  App Data: %s", string(a.appData))
-	log.Printf("  Packet Size: %d bytes", len(packet))
-	log.Printf("  Full Packet: %x", packet)
+	log.Printf("  Signature: %x", a.signature)
+	log.Printf("  Total Packet Size: %d bytes", len(packet))
+	log.Printf("  Raw Packet: %x", packet)
 
 	// Propagate to interfaces
 	for _, iface := range interfaces {
-		log.Printf("Propagating on interface %s (%s):", iface.GetName(), iface.GetType())
+		log.Printf("Propagating on interface %s:", iface.GetName())
+		log.Printf("  Interface Type: %s", iface.GetType())
 		log.Printf("  MTU: %d bytes", iface.GetMTU())
 
 		if err := iface.Send(packet, ""); err != nil {
@@ -136,18 +139,28 @@ func (a *Announce) HandleAnnounce(data []byte) error {
 	a.mutex.Lock()
 	defer a.mutex.Unlock()
 
+	// Enhanced validation logging
+	log.Printf("Received announce data (%d bytes):", len(data))
+	log.Printf("  Raw Data: %x", data)
+
 	// Validate announce data
 	if len(data) < 16+32+1 { // Min size: hash + pubkey + hops
+		log.Printf("  Error: Invalid announce data length (got %d, need at least %d)", 
+			len(data), 16+32+1)
 		return errors.New("invalid announce data")
 	}
 
-	// Extract fields
+	// Extract and log fields
 	destHash := data[:16]
 	publicKey := data[16:48]
 	hopCount := data[48]
 
-	// Validate hop count
+	log.Printf("  Destination Hash: %x", destHash)
+	log.Printf("  Public Key: %x", publicKey)
+	log.Printf("  Hop Count: %d", hopCount)
+
 	if hopCount > MAX_HOPS {
+		log.Printf("  Error: Exceeded maximum hop count (%d > %d)", hopCount, MAX_HOPS)
 		return errors.New("announce exceeded maximum hop count")
 	}
 
@@ -155,27 +168,36 @@ func (a *Announce) HandleAnnounce(data []byte) error {
 	appData := data[49 : len(data)-64]
 	signature := data[len(data)-64:]
 
+	log.Printf("  App Data (%d bytes): %s", len(appData), string(appData))
+	log.Printf("  Signature: %x", signature)
+
 	// Create announced identity from public key
 	announcedIdentity := identity.FromPublicKey(publicKey)
 	if announcedIdentity == nil {
+		log.Printf("  Error: Invalid identity public key")
 		return errors.New("invalid identity public key")
 	}
 
 	// Verify signature
 	signData := append(destHash, appData...)
 	if !announcedIdentity.Verify(signData, signature) {
+		log.Printf("  Error: Invalid announce signature")
 		return errors.New("invalid announce signature")
 	}
+
+	log.Printf("  Signature verification successful")
 
 	// Process announce with registered handlers
 	for _, handler := range a.handlers {
 		if handler.ReceivePathResponses() || !a.pathResponse {
 			if err := handler.ReceivedAnnounce(destHash, announcedIdentity, appData); err != nil {
+				log.Printf("  Handler error: %v", err)
 				return err
 			}
 		}
 	}
 
+	log.Printf("  Successfully processed announce")
 	return nil
 }
 

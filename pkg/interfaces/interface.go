@@ -21,7 +21,10 @@ type Interface interface {
 	GetMode() common.InterfaceMode
 	IsOnline() bool
 	IsDetached() bool
+	IsEnabled() bool
 	Detach()
+	Enable()
+	Disable()
 	Send(data []byte, addr string) error
 	SetPacketCallback(common.PacketCallback)
 	GetPacketCallback() common.PacketCallback
@@ -33,10 +36,23 @@ type BaseInterface struct {
 	mode           common.InterfaceMode
 	ifType         common.InterfaceType
 	online         bool
+	enabled        bool
 	detached       bool
 	mtu            int
 	mutex          sync.RWMutex
 	packetCallback common.PacketCallback
+}
+
+func NewBaseInterface(name string, ifType common.InterfaceType, enabled bool) BaseInterface {
+	return BaseInterface{
+		name:     name,
+		mode:     common.IF_MODE_FULL,
+		ifType:   ifType,
+		online:   false,
+		enabled:  enabled,
+		detached: false,
+		mtu:      common.DEFAULT_MTU,
+	}
 }
 
 func (i *BaseInterface) SetPacketCallback(callback common.PacketCallback) {
@@ -136,5 +152,21 @@ func (i *BaseInterface) GetConn() net.Conn {
 }
 
 func (i *BaseInterface) IsEnabled() bool {
-	return i.Online && !i.Detached
+	i.mutex.RLock()
+	defer i.mutex.RUnlock()
+	return i.enabled && i.online && !i.detached
+}
+
+func (i *BaseInterface) Enable() {
+	i.mutex.Lock()
+	defer i.mutex.Unlock()
+	i.enabled = true
+	i.online = true
+}
+
+func (i *BaseInterface) Disable() {
+	i.mutex.Lock()
+	defer i.mutex.Unlock()
+	i.enabled = false
+	i.online = false
 }

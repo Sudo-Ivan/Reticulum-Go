@@ -9,17 +9,18 @@ type ConfigProvider interface {
 
 // InterfaceConfig represents interface configuration
 type InterfaceConfig struct {
-    Type        string `toml:"type"`
-    Name        string `toml:"name"`
-    Enabled     bool   `toml:"enabled"`
-    TargetHost  string `toml:"target_host,omitempty"`
-    TargetPort  int    `toml:"target_port,omitempty"`
-    Interface   string `toml:"interface,omitempty"`
-    Address     string `toml:"address,omitempty"`
-    Port        int    `toml:"port,omitempty"`
-    KISSFraming bool   `toml:"kiss_framing,omitempty"`
-    I2PTunneled bool   `toml:"i2p_tunneled,omitempty"`
-    PreferIPv6  bool   `toml:"prefer_ipv6,omitempty"`
+    Name         string `toml:"name"`
+    Type         string `toml:"type"`
+    Enabled      bool   `toml:"enabled"`
+    Address      string `toml:"address"`
+    Port         int    `toml:"port"`
+    TargetHost   string `toml:"target_host"`
+    TargetPort   int    `toml:"target_port"`
+    TargetAddress string `toml:"target_address"`
+    Interface    string `toml:"interface"`
+    KISSFraming  bool   `toml:"kiss_framing"`
+    I2PTunneled  bool   `toml:"i2p_tunneled"`
+    PreferIPv6   bool   `toml:"prefer_ipv6"`
 }
 
 // ReticulumConfig represents the main configuration structure

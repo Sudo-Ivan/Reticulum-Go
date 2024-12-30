@@ -7,15 +7,15 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/Sudo-Ivan/reticulum-go/pkg/common"
 	"github.com/Sudo-Ivan/reticulum-go/internal/config"
-	"github.com/Sudo-Ivan/reticulum-go/pkg/transport"
+	"github.com/Sudo-Ivan/reticulum-go/pkg/common"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/interfaces"
+	"github.com/Sudo-Ivan/reticulum-go/pkg/transport"
 )
 
 type Reticulum struct {
-	config    *common.ReticulumConfig
-	transport *transport.Transport
+	config     *common.ReticulumConfig
+	transport  *transport.Transport
 	interfaces []interfaces.Interface
 }
 
@@ -48,11 +48,18 @@ func (r *Reticulum) Start() error {
 				ifaceConfig.TargetPort,
 				ifaceConfig.KISSFraming,
 				ifaceConfig.I2PTunneled,
+				ifaceConfig.Enabled,
 			)
 			if err != nil {
 				log.Printf("Failed to create TCP interface %s: %v", ifaceConfig.Name, err)
 				continue
 			}
+
+			if err := client.Start(); err != nil {
+				log.Printf("Failed to start TCP interface %s: %v", ifaceConfig.Name, err)
+				continue
+			}
+
 			iface = client
 
 		case "TCPServerInterface":
@@ -68,19 +75,33 @@ func (r *Reticulum) Start() error {
 				log.Printf("Failed to create TCP server interface %s: %v", ifaceConfig.Name, err)
 				continue
 			}
+
+			if err := server.Start(); err != nil {
+				log.Printf("Failed to start TCP server interface %s: %v", ifaceConfig.Name, err)
+				continue
+			}
+
 			iface = server
 
 		case "UDPInterface":
 			addr := fmt.Sprintf("%s:%d", ifaceConfig.Address, ifaceConfig.Port)
+
 			udp, err := interfaces.NewUDPInterface(
 				ifaceConfig.Name,
 				addr,
 				"", // No target address for server initially
+				ifaceConfig.Enabled,
 			)
 			if err != nil {
 				log.Printf("Failed to create UDP interface %s: %v", ifaceConfig.Name, err)
 				continue
 			}
+
+			if err := udp.Start(); err != nil {
+				log.Printf("Failed to start UDP interface %s: %v", ifaceConfig.Name, err)
+				continue
+			}
+
 			iface = udp
 
 		case "AutoInterface":
@@ -96,6 +117,8 @@ func (r *Reticulum) Start() error {
 			// Set packet callback to transport
 			iface.SetPacketCallback(r.transport.HandlePacket)
 			r.interfaces = append(r.interfaces, iface)
+			log.Printf("Created and started interface %s (type=%v, enabled=%v)",
+				iface.GetName(), iface.GetType(), iface.IsEnabled())
 		}
 	}
 
@@ -137,4 +160,4 @@ func main() {
 	if err := r.Stop(); err != nil {
 		log.Printf("Error during shutdown: %v", err)
 	}
-} 
+}

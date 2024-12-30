@@ -93,7 +93,7 @@ func CreateDefaultConfig(path string) error {
 		Type:    "UDPInterface",
 		Enabled: true,
 		Address: "0.0.0.0",
-		Port:    37428, // Default RNS port
+		Port:    37696, // Default RNS port
 	}
 
 	data, err := toml.Marshal(cfg)

@@ -54,6 +54,7 @@ type Transport struct {
 	mutex            sync.RWMutex
 	handlerLock      sync.RWMutex
 	pathLock         sync.RWMutex
+	links            map[string]*Link
 }
 
 func NewTransport(config *common.ReticulumConfig) (*Transport, error) {
@@ -61,6 +62,7 @@ func NewTransport(config *common.ReticulumConfig) (*Transport, error) {
 		config:     config,
 		interfaces: make(map[string]common.NetworkInterface),
 		paths:      make(map[string]*common.Path),
+		links:      make(map[string]*Link),
 	}
 
 	transportMutex.Lock()
@@ -126,6 +128,8 @@ type Link struct {
 	packetCb         func([]byte)
 	resourceCb       func(interface{}) bool
 	resourceStrategy int
+	connectedCb      func()
+	disconnectedCb   func()
 }
 
 type Destination struct {
@@ -183,6 +187,9 @@ func (l *Link) SetResourceCallback(cb func(interface{}) bool) {
 }
 
 func (l *Link) Teardown() {
+	if l.disconnectedCb != nil {
+		l.disconnectedCb()
+	}
 	if l.closedCb != nil {
 		l.closedCb()
 	}
@@ -206,7 +213,9 @@ func (l *Link) Send(data []byte) error {
 }
 
 type AnnounceHandler interface {
-	ReceivedAnnounce(destinationHash []byte, identity interface{}, appData []byte)
+	AspectFilter() []string
+	ReceivedAnnounce(destinationHash []byte, announcedIdentity interface{}, appData []byte) error
+	ReceivePathResponses() bool
 }
 
 func (t *Transport) RegisterAnnounceHandler(handler AnnounceHandler) {
@@ -629,4 +638,34 @@ func (t *Transport) SendPacket(p *packet.Packet) error {
 	}
 
 	return nil
+}
+
+func (t *Transport) GetLink(destHash []byte) (*Link, error) {
+	t.mutex.RLock()
+	defer t.mutex.RUnlock()
+	
+	link, exists := t.links[string(destHash)]
+	if !exists {
+		// Create new link if it doesn't exist
+		link = NewLink(
+			destHash,
+			nil,  // established callback
+			nil,  // closed callback
+		)
+		t.links[string(destHash)] = link
+	}
+	
+	return link, nil
+}
+
+func (l *Link) OnConnected(cb func()) {
+	l.connectedCb = cb
+	// If already established, trigger callback immediately
+	if !l.establishedAt.IsZero() && cb != nil {
+		cb()
+	}
+}
+
+func (l *Link) OnDisconnected(cb func()) {
+	l.disconnectedCb = cb
 }

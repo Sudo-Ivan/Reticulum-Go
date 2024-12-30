@@ -9,10 +9,14 @@ loglevel = 4
   [interfaces."Local TCP"]
   type = "TCPClientInterface"
   enabled = true
-  target_host = "127.0.0.1"
+  target_host = "rns.quad4.io"
   target_port = 4242
 
   [interfaces."Local UDP"]
   type = "UDPInterface"
   enabled = true
-  interface = "lo" 
+  interface = "lo"
+  address = "127.0.0.1"
+  port = 37428
+  target_address = "127.0.0.1"
+  target_port = 37430

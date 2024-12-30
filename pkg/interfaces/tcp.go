@@ -44,83 +44,54 @@ type TCPClientInterface struct {
 	packetCallback    common.PacketCallback
 	mutex             sync.RWMutex
 	detached          bool
+	enabled           bool
 }
 
-func NewTCPClient(name string, targetAddr string, targetPort int, kissFraming bool, i2pTunneled bool) (*TCPClientInterface, error) {
+func NewTCPClient(name string, targetHost string, targetPort int, kissFraming bool, i2pTunneled bool, enabled bool) (*TCPClientInterface, error) {
 	tc := &TCPClientInterface{
-		BaseInterface: BaseInterface{
-			name:     name,
-			mode:     common.IF_MODE_FULL,
-			ifType:   common.IF_TYPE_TCP,
-			online:   false,
-			mtu:      1064,
-			detached: false,
-		},
-		targetAddr:  targetAddr,
-		targetPort:  targetPort,
-		kissFraming: kissFraming,
-		i2pTunneled: i2pTunneled,
-		initiator:   true,
+		BaseInterface: NewBaseInterface(name, common.IF_TYPE_TCP, enabled),
+		targetAddr:    targetHost,
+		targetPort:    targetPort,
+		kissFraming:   kissFraming,
+		i2pTunneled:   i2pTunneled,
+		initiator:     true,
+		enabled:       enabled,
 	}
 
-	if err := tc.connect(true); err != nil {
-		go tc.reconnect()
-	} else {
-		go tc.readLoop()
+	if enabled {
+		addr := fmt.Sprintf("%s:%d", targetHost, targetPort)
+		conn, err := net.Dial("tcp", addr)
+		if err != nil {
+			return nil, err
+		}
+		tc.conn = conn
+		tc.online = true
 	}
 
 	return tc, nil
 }
 
-func (tc *TCPClientInterface) connect(initial bool) error {
+func (tc *TCPClientInterface) Start() error {
+	tc.mutex.Lock()
+	defer tc.mutex.Unlock()
+
+	if !tc.enabled {
+		return fmt.Errorf("interface not enabled")
+	}
+
+	if tc.conn != nil {
+		tc.online = true
+		return nil
+	}
+
 	addr := fmt.Sprintf("%s:%d", tc.targetAddr, tc.targetPort)
-	conn, err := net.DialTimeout("tcp", addr, time.Second*INITIAL_TIMEOUT)
+	conn, err := net.Dial("tcp", addr)
 	if err != nil {
-		if initial {
-			return fmt.Errorf("initial connection failed: %v", err)
-		}
 		return err
 	}
-
 	tc.conn = conn
-	tc.Online = true
-	tc.writing = false
-	tc.neverConnected = false
-
-	// Set TCP options
-	if tcpConn, ok := conn.(*net.TCPConn); ok {
-		tcpConn.SetNoDelay(true)
-		tcpConn.SetKeepAlive(true)
-		tcpConn.SetKeepAlivePeriod(time.Second * TCP_PROBE_INTERVAL)
-	}
-
+	tc.online = true
 	return nil
-}
-
-func (tc *TCPClientInterface) reconnect() {
-	if tc.initiator && !tc.reconnecting {
-		tc.reconnecting = true
-		attempts := 0
-
-		for !tc.Online {
-			time.Sleep(time.Second * RECONNECT_WAIT)
-			attempts++
-
-			if tc.maxReconnectTries > 0 && attempts > tc.maxReconnectTries {
-				tc.teardown()
-				break
-			}
-
-			if err := tc.connect(false); err != nil {
-				continue
-			}
-
-			go tc.readLoop()
-			break
-		}
-
-		tc.reconnecting = false
-	}
 }
 
 func (tc *TCPClientInterface) readLoop() {
@@ -281,7 +252,9 @@ func (tc *TCPClientInterface) SetPacketCallback(cb common.PacketCallback) {
 }
 
 func (tc *TCPClientInterface) IsEnabled() bool {
-	return tc.Online
+	tc.mutex.RLock()
+	defer tc.mutex.RUnlock()
+	return tc.enabled && tc.online && !tc.detached
 }
 
 func (tc *TCPClientInterface) GetName() string {
@@ -306,17 +279,68 @@ func (tc *TCPClientInterface) IsOnline() bool {
 	return tc.online
 }
 
+func (tc *TCPClientInterface) reconnect() {
+	tc.mutex.Lock()
+	if tc.reconnecting {
+		tc.mutex.Unlock()
+		return
+	}
+	tc.reconnecting = true
+	tc.mutex.Unlock()
+
+	retries := 0
+	for retries < tc.maxReconnectTries {
+		tc.teardown()
+
+		addr := fmt.Sprintf("%s:%d", tc.targetAddr, tc.targetPort)
+		conn, err := net.Dial("tcp", addr)
+		if err == nil {
+			tc.mutex.Lock()
+			tc.conn = conn
+			tc.online = true
+			tc.neverConnected = false
+			tc.reconnecting = false
+			tc.mutex.Unlock()
+
+			// Restart read loop
+			go tc.readLoop()
+			return
+		}
+
+		retries++
+		// Wait before retrying
+		select {
+		case <-time.After(RECONNECT_WAIT * time.Second):
+			continue
+		}
+	}
+
+	// Failed to reconnect after max retries
+	tc.mutex.Lock()
+	tc.reconnecting = false
+	tc.mutex.Unlock()
+	tc.teardown()
+}
+
+func (tc *TCPClientInterface) Enable() {
+	tc.mutex.Lock()
+	defer tc.mutex.Unlock()
+	tc.online = true
+}
+
+func (tc *TCPClientInterface) Disable() {
+	tc.mutex.Lock()
+	defer tc.mutex.Unlock()
+	tc.online = false
+}
+
 type TCPServerInterface struct {
 	BaseInterface
-	listener       net.Listener
 	connections    map[string]net.Conn
 	mutex          sync.RWMutex
 	bindAddr       string
 	bindPort       int
 	preferIPv6     bool
-	spawned        bool
-	port           int
-	host           string
 	kissFraming    bool
 	i2pTunneled    bool
 	packetCallback common.PacketCallback
@@ -386,4 +410,16 @@ func (ts *TCPServerInterface) IsOnline() bool {
 	ts.mutex.RLock()
 	defer ts.mutex.RUnlock()
 	return ts.online
+}
+
+func (ts *TCPServerInterface) Enable() {
+	ts.mutex.Lock()
+	defer ts.mutex.Unlock()
+	ts.online = true
+}
+
+func (ts *TCPServerInterface) Disable() {
+	ts.mutex.Lock()
+	defer ts.mutex.Unlock()
+	ts.online = false
 }
