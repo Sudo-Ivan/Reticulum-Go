@@ -435,4 +435,26 @@ func (i *Identity) Hash() []byte {
 
 func (i *Identity) Hex() string {
 	return hex.EncodeToString(i.Hash())
+}
+
+func FromPublicKey(publicKey []byte) *Identity {
+	if len(publicKey) != curve25519.PointSize {
+		return nil
+	}
+
+	i := &Identity{
+		publicKey:       append([]byte{}, publicKey...),
+		ratchets:       make(map[string][]byte),
+		ratchetExpiry:  make(map[string]int64),
+	}
+
+	// Generate Ed25519 verification key from the X25519 public key
+	hash := sha256.New()
+	hash.Write(publicKey)
+	seed := hash.Sum(nil)
+	
+	// Use the first 32 bytes of the hash as the verification key
+	i.verificationKey = ed25519.PublicKey(seed[:32])
+
+	return i
 } 

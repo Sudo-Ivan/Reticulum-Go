@@ -2,13 +2,12 @@ package announce
 
 import (
 	"crypto/sha256"
-	"encoding/binary"
 	"errors"
 	"sync"
 	"time"
 
 	"github.com/Sudo-Ivan/reticulum-go/pkg/identity"
-	"github.com/Sudo-Ivan/reticulum-go/pkg/transport"
+	"github.com/Sudo-Ivan/reticulum-go/pkg/common"
 )
 
 const (
@@ -64,7 +63,7 @@ func New(dest *identity.Identity, appData []byte, pathResponse bool) (*Announce,
 	return a, nil
 }
 
-func (a *Announce) Propagate(interfaces []transport.Interface) error {
+func (a *Announce) Propagate(interfaces []common.NetworkInterface) error {
 	a.mutex.Lock()
 	defer a.mutex.Unlock()
 
@@ -89,7 +88,7 @@ func (a *Announce) Propagate(interfaces []transport.Interface) error {
 
 	// Propagate to all interfaces
 	for _, iface := range interfaces {
-		if err := iface.SendAnnounce(packet, a.pathResponse); err != nil {
+		if err := iface.Send(packet, ""); err != nil {
 			return err
 		}
 	}
@@ -125,21 +124,34 @@ func (a *Announce) HandleAnnounce(data []byte) error {
 
 	// Extract fields
 	destHash := data[:16]
-	pubKey := data[16:48]
-	hops := data[48]
+	publicKey := data[16:48]
+	hopCount := data[48]
+
+	// Validate hop count
+	if hopCount > MAX_HOPS {
+		return errors.New("announce exceeded maximum hop count")
+	}
+
+	// Extract app data and signature
 	appData := data[49 : len(data)-64]
 	signature := data[len(data)-64:]
 
+	// Create announced identity from public key
+	announcedIdentity := identity.FromPublicKey(publicKey)
+	if announcedIdentity == nil {
+		return errors.New("invalid identity public key")
+	}
+
 	// Verify signature
 	signData := append(destHash, appData...)
-	if !a.identity.Verify(signData, signature) {
+	if !announcedIdentity.Verify(signData, signature) {
 		return errors.New("invalid announce signature")
 	}
 
 	// Process announce with registered handlers
 	for _, handler := range a.handlers {
 		if handler.ReceivePathResponses() || !a.pathResponse {
-			if err := handler.ReceivedAnnounce(destHash, a.identity, appData); err != nil {
+			if err := handler.ReceivedAnnounce(destHash, announcedIdentity, appData); err != nil {
 				return err
 			}
 		}
@@ -148,7 +160,7 @@ func (a *Announce) HandleAnnounce(data []byte) error {
 	return nil
 }
 
-func (a *Announce) RequestPath(destHash []byte, onInterface transport.Interface) error {
+func (a *Announce) RequestPath(destHash []byte, onInterface common.NetworkInterface) error {
 	a.mutex.Lock()
 	defer a.mutex.Unlock()
 
@@ -158,7 +170,7 @@ func (a *Announce) RequestPath(destHash []byte, onInterface transport.Interface)
 	packet = append(packet, byte(0)) // Initial hop count
 
 	// Send path request
-	if err := onInterface.SendPathRequest(packet); err != nil {
+	if err := onInterface.Send(packet, ""); err != nil {
 		return err
 	}
 
