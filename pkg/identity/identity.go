@@ -7,9 +7,11 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"sync"
 	"time"
 
@@ -90,6 +92,61 @@ func decryptAESGCM(key, ciphertext []byte) ([]byte, error) {
 	}
 
 	return plaintext, nil
+}
+
+func encryptAESCBC(key, plaintext []byte) ([]byte, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+
+	// Generate IV
+	iv := make([]byte, aes.BlockSize)
+	if _, err := io.ReadFull(rand.Reader, iv); err != nil {
+		return nil, err
+	}
+
+	// Add PKCS7 padding
+	padding := aes.BlockSize - len(plaintext)%aes.BlockSize
+	padtext := make([]byte, len(plaintext)+padding)
+	copy(padtext, plaintext)
+	for i := len(plaintext); i < len(padtext); i++ {
+		padtext[i] = byte(padding)
+	}
+
+	// Encrypt
+	mode := cipher.NewCBCEncrypter(block, iv)
+	ciphertext := make([]byte, len(padtext))
+	mode.CryptBlocks(ciphertext, padtext)
+
+	// Prepend IV to ciphertext
+	return append(iv, ciphertext...), nil
+}
+
+func decryptAESCBC(key, ciphertext []byte) ([]byte, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(ciphertext) < aes.BlockSize {
+		return nil, errors.New("ciphertext too short")
+	}
+
+	iv := ciphertext[:aes.BlockSize]
+	ciphertext = ciphertext[aes.BlockSize:]
+
+	if len(ciphertext)%aes.BlockSize != 0 {
+		return nil, errors.New("ciphertext is not a multiple of block size")
+	}
+
+	mode := cipher.NewCBCDecrypter(block, iv)
+	plaintext := make([]byte, len(ciphertext))
+	mode.CryptBlocks(plaintext, ciphertext)
+
+	// Remove PKCS7 padding
+	padding := int(plaintext[len(plaintext)-1])
+	return plaintext[:len(plaintext)-padding], nil
 }
 
 func New() (*Identity, error) {
@@ -349,4 +406,86 @@ func (i *Identity) Decrypt(ciphertext []byte) ([]byte, error) {
 
 	// Decrypt data
 	return decryptAESGCM(key, encryptedData)
+}
+
+func (i *Identity) EncryptWithHMAC(plaintext []byte, key []byte) ([]byte, error) {
+	// Encrypt with AES-CBC
+	ciphertext, err := encryptAESCBC(key, plaintext)
+	if err != nil {
+		return nil, err
+	}
+
+	// Generate HMAC
+	h := hmac.New(sha256.New, key)
+	h.Write(ciphertext)
+	mac := h.Sum(nil)
+
+	// Combine ciphertext and HMAC
+	return append(ciphertext, mac...), nil
+}
+
+func (i *Identity) DecryptWithHMAC(data []byte, key []byte) ([]byte, error) {
+	if len(data) < sha256.Size {
+		return nil, errors.New("data too short")
+	}
+
+	// Split HMAC and ciphertext
+	macStart := len(data) - sha256.Size
+	ciphertext := data[:macStart]
+	messageMAC := data[macStart:]
+
+	// Verify HMAC
+	h := hmac.New(sha256.New, key)
+	h.Write(ciphertext)
+	expectedMAC := h.Sum(nil)
+	if !hmac.Equal(messageMAC, expectedMAC) {
+		return nil, errors.New("invalid HMAC")
+	}
+
+	// Decrypt
+	return decryptAESCBC(key, ciphertext)
+}
+
+func (i *Identity) ToFile(path string) error {
+	data := map[string]interface{}{
+		"private_key": i.privateKey,
+		"public_key": i.publicKey,
+		"signing_key": i.signingKey,
+		"verification_key": i.verificationKey,
+		"app_data": i.appData,
+	}
+	
+	file, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	
+	return json.NewEncoder(file).Encode(data)
+}
+
+func RecallIdentity(path string) (*Identity, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	
+	var data map[string]interface{}
+	if err := json.NewDecoder(file).Decode(&data); err != nil {
+		return nil, err
+	}
+	
+	// Reconstruct identity from saved data
+	id := &Identity{
+		privateKey: data["private_key"].([]byte),
+		publicKey: data["public_key"].([]byte),
+		signingKey: data["signing_key"].(ed25519.PrivateKey),
+		verificationKey: data["verification_key"].(ed25519.PublicKey),
+		appData: data["app_data"].([]byte),
+		ratchets: make(map[string][]byte),
+		ratchetExpiry: make(map[string]int64),
+	}
+	
+	return id, nil
 }

@@ -37,10 +37,13 @@ const (
 	STATUS_CLOSED  = 0x02
 	STATUS_FAILED  = 0x03
 
-	// Add packet types
 	PACKET_TYPE_DATA     = 0x00
 	PACKET_TYPE_LINK     = 0x01
 	PACKET_TYPE_IDENTIFY = 0x02
+
+	PROVE_NONE = 0x00
+	PROVE_ALL  = 0x01
+	PROVE_APP  = 0x02
 )
 
 type Link struct {
@@ -69,7 +72,6 @@ type Link struct {
 	hmacKey        []byte
 	transport      *transport.Transport
 
-	// Add missing fields
 	rssi                      float64
 	snr                       float64
 	q                         float64
@@ -77,6 +79,9 @@ type Link struct {
 	resourceStartedCallback   func(interface{})
 	resourceConcludedCallback func(interface{})
 	resourceStrategy          byte
+	proofStrategy             byte
+	proofCallback             func(*packet.Packet) bool
+	trackPhyStats             bool
 }
 
 func NewLink(dest *destination.Destination, transport *transport.Transport, establishedCallback func(*Link), closedCallback func(*Link)) *Link {
@@ -269,27 +274,40 @@ func (r *RequestReceipt) Concluded() bool {
 func (l *Link) TrackPhyStats(rssi float64, snr float64, q float64) {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
-
+	
 	l.rssi = rssi
 	l.snr = snr
 	l.q = q
 }
 
+func (l *Link) UpdatePhyStats(rssi float64, snr float64, q float64) {
+	l.TrackPhyStats(rssi, snr, q)
+}
+
 func (l *Link) GetRSSI() float64 {
 	l.mutex.RLock()
 	defer l.mutex.RUnlock()
+	if !l.trackPhyStats {
+		return 0
+	}
 	return l.rssi
 }
 
 func (l *Link) GetSNR() float64 {
 	l.mutex.RLock()
 	defer l.mutex.RUnlock()
+	if !l.trackPhyStats {
+		return 0
+	}
 	return l.snr
 }
 
 func (l *Link) GetQ() float64 {
 	l.mutex.RLock()
 	defer l.mutex.RUnlock()
+	if !l.trackPhyStats {
+		return 0
+	}
 	return l.q
 }
 
@@ -557,10 +575,6 @@ func (l *Link) decrypt(data []byte) ([]byte, error) {
 	return plaintext[:len(plaintext)-padding], nil
 }
 
-func (l *Link) UpdatePhyStats(rssi float64, snr float64, q float64) {
-	l.TrackPhyStats(rssi, snr, q)
-}
-
 func (l *Link) GetRTT() float64 {
 	l.mutex.RLock()
 	defer l.mutex.RUnlock()
@@ -614,4 +628,69 @@ func (l *Link) SendResource(res *resource.Resource) error {
 	}
 
 	return nil
+}
+
+func (l *Link) maintainLink() {
+	ticker := time.NewTicker(time.Second * KEEPALIVE)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			if l.status != STATUS_ACTIVE {
+				return
+			}
+
+			if l.InactiveFor() > float64(STALE_TIME) {
+				l.teardownReason = STATUS_FAILED
+				l.Teardown()
+				return
+			}
+
+			if l.NoDataFor() > float64(KEEPALIVE) {
+				// Send keepalive packet
+				l.SendPacket([]byte{})
+			}
+		}
+	}
+}
+
+func (l *Link) Start() {
+	go l.maintainLink()
+}
+
+func (l *Link) SetProofStrategy(strategy byte) error {
+	if strategy != PROVE_NONE && strategy != PROVE_ALL && strategy != PROVE_APP {
+		return errors.New("invalid proof strategy")
+	}
+
+	l.mutex.Lock()
+	defer l.mutex.Unlock()
+	l.proofStrategy = strategy
+	return nil
+}
+
+func (l *Link) SetProofCallback(callback func(*packet.Packet) bool) {
+	l.mutex.Lock()
+	defer l.mutex.Unlock()
+	l.proofCallback = callback
+}
+
+func (l *Link) HandleProofRequest(packet *packet.Packet) bool {
+	l.mutex.RLock()
+	defer l.mutex.RUnlock()
+
+	switch l.proofStrategy {
+	case PROVE_NONE:
+		return false
+	case PROVE_ALL:
+		return true
+	case PROVE_APP:
+		if l.proofCallback != nil {
+			return l.proofCallback(packet)
+		}
+		return false
+	default:
+		return false
+	}
 }
