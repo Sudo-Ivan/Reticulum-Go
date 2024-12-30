@@ -81,16 +81,16 @@ type Link struct {
 
 func NewLink(dest *destination.Destination, transport *transport.Transport, establishedCallback func(*Link), closedCallback func(*Link)) *Link {
 	return &Link{
-		destination:        dest,
-		status:            STATUS_PENDING,
-		transport:         transport,
+		destination:         dest,
+		status:              STATUS_PENDING,
+		transport:           transport,
 		establishedCallback: establishedCallback,
-		closedCallback:     closedCallback,
-		establishedAt:      time.Time{}, // Zero time until established
-		lastInbound:        time.Time{},
-		lastOutbound:       time.Time{},
-		lastDataReceived:   time.Time{},
-		lastDataSent:       time.Time{},
+		closedCallback:      closedCallback,
+		establishedAt:       time.Time{}, // Zero time until established
+		lastInbound:         time.Time{},
+		lastOutbound:        time.Time{},
+		lastDataReceived:    time.Time{},
+		lastDataSent:        time.Time{},
 	}
 }
 
@@ -494,17 +494,27 @@ func (l *Link) encrypt(data []byte) ([]byte, error) {
 		return nil, err
 	}
 
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
+	// Generate IV
+	iv := make([]byte, aes.BlockSize)
+	if _, err := io.ReadFull(rand.Reader, iv); err != nil {
 		return nil, err
 	}
 
-	nonce := make([]byte, gcm.NonceSize())
-	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
-		return nil, err
+	// Add PKCS7 padding
+	padding := aes.BlockSize - len(data)%aes.BlockSize
+	padtext := make([]byte, len(data)+padding)
+	copy(padtext, data)
+	for i := len(data); i < len(padtext); i++ {
+		padtext[i] = byte(padding)
 	}
 
-	return gcm.Seal(nonce, nonce, data, nil), nil
+	// Encrypt
+	mode := cipher.NewCBCEncrypter(block, iv)
+	ciphertext := make([]byte, len(padtext))
+	mode.CryptBlocks(ciphertext, padtext)
+
+	// Prepend IV to ciphertext
+	return append(iv, ciphertext...), nil
 }
 
 func (l *Link) decrypt(data []byte) ([]byte, error) {
@@ -517,18 +527,34 @@ func (l *Link) decrypt(data []byte) ([]byte, error) {
 		return nil, err
 	}
 
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, err
-	}
-
-	nonceSize := gcm.NonceSize()
-	if len(data) < nonceSize {
+	if len(data) < aes.BlockSize {
 		return nil, errors.New("ciphertext too short")
 	}
 
-	nonce, ciphertext := data[:nonceSize], data[nonceSize:]
-	return gcm.Open(nil, nonce, ciphertext, nil)
+	iv := data[:aes.BlockSize]
+	ciphertext := data[aes.BlockSize:]
+
+	if len(ciphertext)%aes.BlockSize != 0 {
+		return nil, errors.New("ciphertext is not a multiple of block size")
+	}
+
+	mode := cipher.NewCBCDecrypter(block, iv)
+	plaintext := make([]byte, len(ciphertext))
+	mode.CryptBlocks(plaintext, ciphertext)
+
+	// Remove PKCS7 padding
+	padding := int(plaintext[len(plaintext)-1])
+	if padding > aes.BlockSize || padding == 0 {
+		return nil, errors.New("invalid padding")
+	}
+
+	for i := len(plaintext) - padding; i < len(plaintext); i++ {
+		if plaintext[i] != byte(padding) {
+			return nil, errors.New("invalid padding")
+		}
+	}
+
+	return plaintext[:len(plaintext)-padding], nil
 }
 
 func (l *Link) UpdatePhyStats(rssi float64, snr float64, q float64) {
