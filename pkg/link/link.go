@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"errors"
+	"fmt"
 	"io"
 	"sync"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/Sudo-Ivan/reticulum-go/pkg/destination"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/identity"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/packet"
+	"github.com/Sudo-Ivan/reticulum-go/pkg/resource"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/transport"
 )
 
@@ -553,4 +555,37 @@ func (l *Link) GetStatus() byte {
 
 func (l *Link) IsActive() bool {
 	return l.GetStatus() == STATUS_ACTIVE
+}
+
+func (l *Link) SendResource(res *resource.Resource) error {
+	l.mutex.Lock()
+	defer l.mutex.Unlock()
+
+	if l.status != STATUS_ACTIVE {
+		l.teardownReason = STATUS_FAILED
+		return errors.New("link not active")
+	}
+
+	// Activate the resource
+	res.Activate()
+
+	// Send the resource data as packets
+	buffer := make([]byte, resource.DEFAULT_SEGMENT_SIZE)
+	for {
+		n, err := res.Read(buffer)
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			l.teardownReason = STATUS_FAILED
+			return fmt.Errorf("error reading resource: %v", err)
+		}
+
+		if err := l.SendPacket(buffer[:n]); err != nil {
+			l.teardownReason = STATUS_FAILED
+			return fmt.Errorf("error sending resource packet: %v", err)
+		}
+	}
+
+	return nil
 }

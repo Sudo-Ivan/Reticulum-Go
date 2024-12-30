@@ -91,6 +91,7 @@ type Resource struct {
 	completedAt        time.Time
 	callback           func(*Resource)
 	progressCallback   func(*Resource)
+	readOffset         int64
 }
 
 func New(data interface{}, autoCompress bool) (*Resource, error) {
@@ -387,4 +388,36 @@ func estimateFileCompression(size int64, extension string) int64 {
 	}
 
 	return int64(float64(size) * ratio)
+}
+
+func (r *Resource) Read(p []byte) (n int, err error) {
+	r.mutex.Lock()
+	defer r.mutex.Unlock()
+
+	if r.data != nil {
+		if r.readOffset >= int64(len(r.data)) {
+			return 0, io.EOF
+		}
+		n = copy(p, r.data[r.readOffset:])
+		r.readOffset += int64(n)
+		return n, nil
+	}
+
+	if r.fileHandle != nil {
+		return r.fileHandle.Read(p)
+	}
+
+	return 0, errors.New("no data source available")
+}
+
+func (r *Resource) GetName() string {
+	r.mutex.RLock()
+	defer r.mutex.RUnlock()
+	return r.fileName
+}
+
+func (r *Resource) GetSize() int64 {
+	r.mutex.RLock()
+	defer r.mutex.RUnlock()
+	return r.dataSize
 }

@@ -28,7 +28,6 @@ type RequestHandler struct {
 	AllowMode         byte
 	AllowedList       [][]byte
 }
-
 type InterfaceMode byte
 type InterfaceType byte
 
