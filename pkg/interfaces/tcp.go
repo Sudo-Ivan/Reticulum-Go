@@ -40,7 +40,7 @@ type TCPClientInterface struct {
 	maxReconnectTries int
 	packetBuffer []byte
 	packetType   byte
-	packetCallback func([]byte, interface{})
+	packetCallback common.PacketCallback
 }
 
 func NewTCPClient(name string, targetAddr string, targetPort int, kissFraming bool, i2pTunneled bool) (*TCPClientInterface, error) {
@@ -273,7 +273,7 @@ func escapeKISS(data []byte) []byte {
 	return escaped
 }
 
-func (tc *TCPClientInterface) SetPacketCallback(cb func([]byte, interface{})) {
+func (tc *TCPClientInterface) SetPacketCallback(cb common.PacketCallback) {
 	tc.packetCallback = cb
 }
 

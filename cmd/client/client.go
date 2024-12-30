@@ -68,15 +68,15 @@ func (c *Client) Start() error {
 				continue
 			}
 			
-			// Convert callback type to match interface
-			callback := func(data []byte, iface interface{}) {
+			callback := common.PacketCallback(func(data []byte, iface interface{}) {
 				c.transport.HandlePacket(data, iface)
-			}
-			client.SetPacketCallback(common.PacketCallback(callback))
+			})
+			client.SetPacketCallback(callback)
 			iface = client
 
 		case "udp":
 			addr := fmt.Sprintf("%s:%d", ifaceConfig.Address, ifaceConfig.Port)
+			
 			udp, err := interfaces.NewUDPInterface(
 				ifaceConfig.Name,
 				addr,
@@ -87,11 +87,10 @@ func (c *Client) Start() error {
 				continue
 			}
 			
-			// Convert callback type to match interface
-			callback := func(data []byte, iface interface{}) {
+			callback := common.PacketCallback(func(data []byte, iface interface{}) {
 				c.transport.HandlePacket(data, iface)
-			}
-			udp.SetPacketCallback(common.PacketCallback(callback))
+			})
+			udp.SetPacketCallback(callback)
 			iface = udp
 
 		default:

@@ -9,7 +9,7 @@ import (
 type InterfaceMode byte
 type InterfaceType byte
 
-type PacketCallback func([]byte, interface{})
+type PacketCallback = func([]byte, interface{})
 
 // NetworkInterface combines both low-level and high-level interface requirements
 type NetworkInterface interface {
