@@ -31,7 +31,7 @@ func GetConfigPath() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(homeDir, ".reticulum", "config"), nil
+	return filepath.Join(homeDir, ".reticulum-go", "config"), nil
 }
 
 func EnsureConfigDir() error {
@@ -40,7 +40,7 @@ func EnsureConfigDir() error {
 		return err
 	}
 
-	configDir := filepath.Join(homeDir, ".reticulum")
+	configDir := filepath.Join(homeDir, ".reticulum-go")
 	return os.MkdirAll(configDir, 0755)
 }
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -15,6 +16,7 @@ import (
 type Reticulum struct {
 	config    *common.ReticulumConfig
 	transport *transport.Transport
+	interfaces []interfaces.Interface
 }
 
 func NewReticulum(cfg *common.ReticulumConfig) (*Reticulum, error) {
@@ -35,16 +37,15 @@ func NewReticulum(cfg *common.ReticulumConfig) (*Reticulum, error) {
 }
 
 func (r *Reticulum) Start() error {
-	// Initialize interfaces based on config
 	for _, ifaceConfig := range r.config.Interfaces {
 		var iface interfaces.Interface
 
 		switch ifaceConfig.Type {
-		case "tcp":
+		case "TCPClientInterface":
 			client, err := interfaces.NewTCPClient(
 				ifaceConfig.Name,
-				ifaceConfig.Address,
-				ifaceConfig.Port,
+				ifaceConfig.TargetHost,
+				ifaceConfig.TargetPort,
 				ifaceConfig.KISSFraming,
 				ifaceConfig.I2PTunneled,
 			)
@@ -54,7 +55,7 @@ func (r *Reticulum) Start() error {
 			}
 			iface = client
 
-		case "tcpserver":
+		case "TCPServerInterface":
 			server, err := interfaces.NewTCPServer(
 				ifaceConfig.Name,
 				ifaceConfig.Address,
@@ -68,13 +69,33 @@ func (r *Reticulum) Start() error {
 			}
 			iface = server
 
+		case "UDPInterface":
+			addr := fmt.Sprintf("%s:%d", ifaceConfig.Address, ifaceConfig.Port)
+			udp, err := interfaces.NewUDPInterface(
+				ifaceConfig.Name,
+				addr,
+				"", // No target address for server initially
+			)
+			if err != nil {
+				log.Printf("Failed to create UDP interface %s: %v", ifaceConfig.Name, err)
+				continue
+			}
+			iface = udp
+
+		case "AutoInterface":
+			log.Printf("AutoInterface type not yet implemented")
+			continue
+
 		default:
 			log.Printf("Unknown interface type: %s", ifaceConfig.Type)
 			continue
 		}
 
-		// Set packet callback to transport
-		iface.SetPacketCallback(r.transport.HandlePacket)
+		if iface != nil {
+			// Set packet callback to transport
+			iface.SetPacketCallback(r.transport.HandlePacket)
+			r.interfaces = append(r.interfaces, iface)
+		}
 	}
 
 	log.Printf("Reticulum initialized with config at: %s", r.config.ConfigPath)

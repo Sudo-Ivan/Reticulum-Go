@@ -55,11 +55,11 @@ func (c *Client) Start() error {
 		var iface common.NetworkInterface
 
 		switch ifaceConfig.Type {
-		case "tcp":
+		case "TCPClientInterface":
 			client, err := interfaces.NewTCPClient(
 				ifaceConfig.Name,
-				ifaceConfig.Address,
-				ifaceConfig.Port,
+				ifaceConfig.TargetHost,
+				ifaceConfig.TargetPort,
 				ifaceConfig.KISSFraming,
 				ifaceConfig.I2PTunneled,
 			)
@@ -74,9 +74,8 @@ func (c *Client) Start() error {
 			client.SetPacketCallback(callback)
 			iface = client
 
-		case "udp":
+		case "UDPInterface":
 			addr := fmt.Sprintf("%s:%d", ifaceConfig.Address, ifaceConfig.Port)
-			
 			udp, err := interfaces.NewUDPInterface(
 				ifaceConfig.Name,
 				addr,
@@ -93,12 +92,18 @@ func (c *Client) Start() error {
 			udp.SetPacketCallback(callback)
 			iface = udp
 
+		case "AutoInterface":
+			log.Printf("AutoInterface type not yet implemented")
+			continue
+
 		default:
 			log.Printf("Unknown interface type: %s", ifaceConfig.Type)
 			continue
 		}
 
-		c.interfaces = append(c.interfaces, iface)
+		if iface != nil {
+			c.interfaces = append(c.interfaces, iface)
+		}
 	}
 
 	return nil

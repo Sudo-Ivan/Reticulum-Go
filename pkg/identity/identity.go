@@ -286,7 +286,7 @@ func Recall(hash []byte) (*Identity, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to get home directory: %w", err)
 		}
-		configDir = filepath.Join(homeDir, ".reticulum")
+		configDir = filepath.Join(homeDir, ".reticulum-go")
 	}
 
 	// Create identities directory if it doesn't exist
