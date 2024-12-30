@@ -2,18 +2,45 @@ package announce
 
 import (
 	"crypto/sha256"
+	"encoding/binary"
 	"errors"
+	"log"
 	"sync"
 	"time"
 
-	"github.com/Sudo-Ivan/reticulum-go/pkg/identity"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/common"
+	"github.com/Sudo-Ivan/reticulum-go/pkg/identity"
 )
 
 const (
+	// Packet Types
+	PACKET_TYPE_DATA     = 0x00
+	PACKET_TYPE_ANNOUNCE = 0x01
+	PACKET_TYPE_LINK     = 0x02
+	PACKET_TYPE_PROOF    = 0x03
+
+	// Announce Types
 	ANNOUNCE_NONE     = 0x00
 	ANNOUNCE_PATH     = 0x01
 	ANNOUNCE_IDENTITY = 0x02
+
+	// Header Types
+	HEADER_TYPE_1 = 0x00 // One address field
+	HEADER_TYPE_2 = 0x01 // Two address fields
+
+	// Propagation Types
+	PROP_TYPE_BROADCAST = 0x00
+	PROP_TYPE_TRANSPORT = 0x01
+
+	// Destination Types
+	DEST_TYPE_SINGLE = 0x00
+	DEST_TYPE_GROUP  = 0x01
+	DEST_TYPE_PLAIN  = 0x02
+	DEST_TYPE_LINK   = 0x03
+
+	// IFAC Flag
+	IFAC_NONE = 0x00
+	IFAC_AUTH = 0x80 // Most significant bit
 
 	MAX_HOPS         = 128
 	PROPAGATION_RATE = 0.02 // 2% of interface bandwidth
@@ -30,14 +57,14 @@ type AnnounceHandler interface {
 type Announce struct {
 	mutex           sync.RWMutex
 	destinationHash []byte
-	identity       *identity.Identity
-	appData        []byte
-	hops           uint8
-	timestamp      int64
-	signature      []byte
-	pathResponse   bool
-	retries        int
-	handlers       []AnnounceHandler
+	identity        *identity.Identity
+	appData         []byte
+	hops            uint8
+	timestamp       int64
+	signature       []byte
+	pathResponse    bool
+	retries         int
+	handlers        []AnnounceHandler
 }
 
 func New(dest *identity.Identity, appData []byte, pathResponse bool) (*Announce, error) {
@@ -64,32 +91,24 @@ func New(dest *identity.Identity, appData []byte, pathResponse bool) (*Announce,
 }
 
 func (a *Announce) Propagate(interfaces []common.NetworkInterface) error {
-	a.mutex.Lock()
-	defer a.mutex.Unlock()
+	packet := a.CreatePacket()
 
-	if a.hops >= MAX_HOPS {
-		return errors.New("maximum hop count reached")
-	}
+	log.Printf("Propagating announce:")
+	log.Printf("  Destination Hash: %x", a.destinationHash)
+	log.Printf("  Public Key: %x", a.identity.GetPublicKey())
+	log.Printf("  App Data: %s", string(a.appData))
+	log.Printf("  Packet Size: %d bytes", len(packet))
+	log.Printf("  Full Packet: %x", packet)
 
-	// Increment hop count
-	a.hops++
-
-	// Create announce packet
-	packet := make([]byte, 0)
-	packet = append(packet, a.destinationHash...)
-	packet = append(packet, a.identity.GetPublicKey()...)
-	packet = append(packet, byte(a.hops))
-	
-	if a.appData != nil {
-		packet = append(packet, a.appData...)
-	}
-	
-	packet = append(packet, a.signature...)
-
-	// Propagate to all interfaces
+	// Propagate to interfaces
 	for _, iface := range interfaces {
+		log.Printf("Propagating on interface %s (%s):", iface.GetName(), iface.GetType())
+		log.Printf("  MTU: %d bytes", iface.GetMTU())
+
 		if err := iface.Send(packet, ""); err != nil {
-			return err
+			log.Printf("  Failed to propagate: %v", err)
+		} else {
+			log.Printf("  Successfully propagated")
 		}
 	}
 
@@ -175,4 +194,56 @@ func (a *Announce) RequestPath(destHash []byte, onInterface common.NetworkInterf
 	}
 
 	return nil
-} 
+}
+
+// CreateHeader creates a Reticulum packet header according to spec
+func CreateHeader(ifacFlag byte, headerType byte, contextFlag byte, propType byte, destType byte, packetType byte, hops byte) []byte {
+	header := make([]byte, 2)
+
+	// First byte: [IFAC Flag], [Header Type], [Context Flag], [Propagation Type], [Destination Type] and [Packet Type]
+	header[0] = ifacFlag | (headerType << 6) | (contextFlag << 5) |
+		(propType << 4) | (destType << 2) | packetType
+
+	// Second byte: Number of hops
+	header[1] = hops
+
+	return header
+}
+
+func (a *Announce) CreatePacket() []byte {
+	packet := make([]byte, 0)
+
+	// Create header for announce packet
+	header := CreateHeader(
+		IFAC_NONE,            // No interface authentication
+		HEADER_TYPE_1,        // One address field
+		0x00,                 // Context flag unset
+		PROP_TYPE_BROADCAST,  // Broadcast propagation
+		DEST_TYPE_SINGLE,     // Single destination
+		PACKET_TYPE_ANNOUNCE, // Announce packet type
+		byte(a.hops),         // Current hop count
+	)
+	packet = append(packet, header...)
+
+	// Add destination hash (16 bytes)
+	packet = append(packet, a.destinationHash...)
+
+	// Add context byte
+	packet = append(packet, ANNOUNCE_IDENTITY)
+
+	// Add public key
+	packet = append(packet, a.identity.GetPublicKey()...)
+
+	// Add app data with length prefix
+	if a.appData != nil {
+		lenBytes := make([]byte, 2)
+		binary.BigEndian.PutUint16(lenBytes, uint16(len(a.appData)))
+		packet = append(packet, lenBytes...)
+		packet = append(packet, a.appData...)
+	}
+
+	// Add signature
+	packet = append(packet, a.signature...)
+
+	return packet
+}

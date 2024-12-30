@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Sudo-Ivan/reticulum-go/internal/config"
+	"github.com/Sudo-Ivan/reticulum-go/pkg/announce"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/common"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/destination"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/identity"
@@ -156,25 +157,26 @@ func (c *Client) handleAnnounce(data []byte) {
 func (c *Client) sendAnnounce() {
 	announceData := make([]byte, 0)
 
-	// Packet type (1 byte)
-	announceData = append(announceData, 0x04)
+	// Create header
+	header := announce.CreateHeader(
+		announce.IFAC_NONE,
+		announce.HEADER_TYPE_1,
+		0x00,
+		announce.PROP_TYPE_BROADCAST,
+		announce.DEST_TYPE_SINGLE,
+		announce.PACKET_TYPE_ANNOUNCE,
+		0x00,
+	)
+	announceData = append(announceData, header...)
 
-	// Destination hash (16 bytes)
-	destHash := identity.TruncatedHash(c.identity.GetPublicKey())
-	announceData = append(announceData, destHash...)
+	// Add destination hash (16 bytes truncated)
+	identityHash := c.identity.Hash()
+	announceData = append(announceData, identityHash...)
 
-	// Timestamp (8 bytes)
-	timeBytes := make([]byte, 8)
-	binary.BigEndian.PutUint64(timeBytes, uint64(time.Now().Unix()))
-	announceData = append(announceData, timeBytes...)
+	// Add context byte
+	announceData = append(announceData, announce.ANNOUNCE_IDENTITY)
 
-	// Hops (1 byte)
-	announceData = append(announceData, 0x00)
-
-	// Flags (1 byte)
-	announceData = append(announceData, 0x00)
-
-	// Public key
+	// Add public key
 	announceData = append(announceData, c.identity.GetPublicKey()...)
 
 	// App data with length prefix
@@ -184,21 +186,26 @@ func (c *Client) sendAnnounce() {
 	announceData = append(announceData, lenBytes...)
 	announceData = append(announceData, appData...)
 
-	// Sign the announce data
-	signData := append(destHash, c.identity.GetPublicKey()...)
+	// Add signature
+	signData := append(identityHash, c.identity.GetPublicKey()...)
 	signData = append(signData, appData...)
 	signature := c.identity.Sign(signData)
 	announceData = append(announceData, signature...)
 
-	log.Printf("Sending announce for identity: %s", c.identity.Hex())
-	log.Printf("Announce packet length: %d bytes", len(announceData))
-	log.Printf("Announce packet hex: %x", announceData)
+	log.Printf("Sending announce:")
+	log.Printf("  Identity Hash: %x", identityHash)
+	log.Printf("  Packet Length: %d bytes", len(announceData))
+	log.Printf("  Full Packet: %x", announceData)
 
+	// Send on all interfaces
 	for _, iface := range c.interfaces {
+		log.Printf("Sending on interface %s (%s):", iface.GetName(), iface.GetType())
+		log.Printf("  MTU: %d bytes", iface.GetMTU())
+
 		if err := iface.Send(announceData, ""); err != nil {
-			log.Printf("Failed to send announce on interface %s: %v", iface.GetName(), err)
+			log.Printf("  Failed to send: %v", err)
 		} else {
-			log.Printf("Sent announce on interface %s", iface.GetName())
+			log.Printf("  Successfully sent announce")
 		}
 	}
 }

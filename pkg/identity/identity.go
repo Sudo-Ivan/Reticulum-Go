@@ -183,7 +183,8 @@ func (i *Identity) Encrypt(plaintext []byte, ratchet []byte) ([]byte, error) {
 func (i *Identity) Hash() []byte {
 	h := sha256.New()
 	h.Write(i.GetPublicKey())
-	return h.Sum(nil)
+	fullHash := h.Sum(nil)
+	return fullHash[:TruncatedHashLen/8]
 }
 
 func TruncatedHash(data []byte) []byte {
@@ -200,6 +201,10 @@ func GetRandomHash() []byte {
 }
 
 func Remember(packetHash, destHash []byte, publicKey []byte, appData []byte) {
+	if len(destHash) > TruncatedHashLen/8 {
+		destHash = destHash[:TruncatedHashLen/8]
+	}
+
 	knownDestinations[string(destHash)] = []interface{}{
 		time.Now().Unix(),
 		packetHash,
@@ -211,6 +216,10 @@ func Remember(packetHash, destHash []byte, publicKey []byte, appData []byte) {
 func ValidateAnnounce(packet []byte, destHash []byte, publicKey []byte, signature []byte, appData []byte) bool {
 	if len(publicKey) != KeySize/8 {
 		return false
+	}
+
+	if len(destHash) > TruncatedHashLen/8 {
+		destHash = destHash[:TruncatedHashLen/8]
 	}
 
 	announced := &Identity{}
