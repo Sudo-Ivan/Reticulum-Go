@@ -78,8 +78,6 @@ Security Features
     [✓] Message encryption
     [✓] Signature schemes
     [✓] Hash functions
-    [ ] Perfect forward secrecy
-    [ ] Post-quantum resistance considerations
 
 Basic Features
 [✓] Network Interface
@@ -119,60 +117,55 @@ Basic Features
     [✓] Message sending/receiving
     [✓] Identity management
 
-1. [✓] Fix import cycles by creating common package
-2. [✓] Complete NetworkInterface implementation
-3. [✓] Add comprehensive interface tests
-4. [✓] Implement connection retry logic
-5. [✓] Add client reconnection handling
-6. [ ] Implement Interface discovery
+[ ] Implement Interface discovery
    - [ ] Auto interface detection
    - [ ] Interface capability detection
    - [ ] Interface mode configuration
    - [ ] Interface bandwidth detection
 
-7. [ ] Test network layer integration end-to-end
+[ ] Test network layer integration end-to-end
    - [ ] Multi-interface testing
    - [ ] Interface failover testing
    - [ ] Mode-specific behavior testing
 
-8. [ ] Add error handling for network failures
+[ ] Add error handling for network failures
    - [ ] Interface reconnection logic
    - [ ] Packet retry mechanisms
    - [ ] Interface fallback handling
 
-9. [ ] Implement interface auto-configuration
+[ ] Implement interface auto-configuration
    - [ ] IPv6 link-local detection
    - [ ] Interface mode auto-selection
    - [ ] MTU discovery
    - [ ] Bandwidth detection
 
-10. [ ] Add metrics collection for interfaces
+[ ] Add metrics collection for interfaces
     - [ ] Bandwidth usage tracking
     - [ ] Packet success/failure rates
     - [ ] Latency measurements
     - [ ] Interface health metrics
 
-11. [ ] Implement client-side path caching
-12. [ ] Add support for additional transport types
-14. [ ] Add post-quantum cryptographic primitives (Future)
-15. [ ] Implement secure key rotation
-16. [ ] Add support for encrypted storage of identities
-17. [ ] Implement secure memory handling
-18. [ ] Add support for hardware security modules (HSM)
-19. [ ] Implement interface modes
+[ ] Implement client-side path caching
+[ ] Add support for additional transport types
+[ ] Add post-quantum cryptographic primitives (Future)
+[ ] Implement secure key rotation
+[ ] Add support for encrypted storage of identities
+[ ] Implement secure memory handling
+[ ] Add support for hardware security modules (HSM)
+[ ] Implement interface modes
     - [ ] Full mode implementation
     - [ ] Gateway mode implementation
     - [ ] Access point mode implementation
     - [ ] Roaming mode implementation
     - [ ] Boundary mode implementation
 
-20. [ ] Add interface bandwidth management
+[ ] Add interface bandwidth management
     - [ ] Rate limiting
     - [ ] QoS implementation
     - [ ] Priority queuing
     - [ ] Congestion control
 
-21. [ ] Implement interface discovery system
+[ ] Implement interface discovery system
     - [ ] Auto interface detection
     - [ ] Interface capability probing
     - [ ] Dynamic interface configuration
