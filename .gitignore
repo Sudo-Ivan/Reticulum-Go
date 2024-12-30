@@ -1,0 +1,8 @@
+reticulum-client
+reticulum-server
+
+bin/
+logs/
+
+.env
+.json

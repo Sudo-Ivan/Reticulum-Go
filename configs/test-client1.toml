@@ -1,0 +1,18 @@
+enable_transport = true
+share_instance = true
+shared_instance_port = 37428
+instance_control_port = 37429
+panic_on_interface_error = false
+loglevel = 4
+
+[interfaces]
+  [interfaces."Local TCP"]
+  type = "TCPClientInterface"
+  enabled = true
+  target_host = "127.0.0.1"
+  target_port = 4242
+
+  [interfaces."Local UDP"]
+  type = "UDPInterface"
+  enabled = true
+  interface = "lo" 
