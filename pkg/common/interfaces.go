@@ -4,6 +4,7 @@ import (
 	"net"
 	"sync"
 	"time"
+	"encoding/binary"
 )
 
 // NetworkInterface defines the interface for all network communication methods
@@ -68,6 +69,7 @@ func NewBaseInterface(name string, ifaceType InterfaceType, enabled bool) BaseIn
 		Mode:    IF_MODE_FULL,
 		Enabled: enabled,
 		MTU:     DEFAULT_MTU,
+		Bitrate: BITRATE_MINIMUM,
 	}
 }
 
@@ -137,4 +139,52 @@ func (i *BaseInterface) Disable() {
 	defer i.Mutex.Unlock()
 	i.Enabled = false
 	i.Online = false
+}
+
+// Default implementations that should be overridden by specific interfaces
+func (i *BaseInterface) Start() error {
+	return nil
+}
+
+func (i *BaseInterface) Stop() error {
+	return nil
+}
+
+func (i *BaseInterface) GetConn() net.Conn {
+	return nil
+}
+
+func (i *BaseInterface) Send(data []byte, address string) error {
+	return i.ProcessOutgoing(data)
+}
+
+func (i *BaseInterface) ProcessIncoming(data []byte) {
+	if i.PacketCallback != nil {
+		i.PacketCallback(data, i)
+	}
+}
+
+func (i *BaseInterface) ProcessOutgoing(data []byte) error {
+	return nil
+}
+
+func (i *BaseInterface) SendPathRequest(data []byte) error {
+	return i.Send(data, "")
+}
+
+func (i *BaseInterface) SendLinkPacket(dest []byte, data []byte, timestamp time.Time) error {
+	// Create link packet
+	packet := make([]byte, 0, len(dest)+len(data)+9) // 1 byte type + dest + 8 byte timestamp
+	packet = append(packet, 0x02)                     // Link packet type
+	packet = append(packet, dest...)
+	
+	// Add timestamp
+	ts := make([]byte, 8)
+	binary.BigEndian.PutUint64(ts, uint64(timestamp.Unix()))
+	packet = append(packet, ts...)
+	
+	// Add data
+	packet = append(packet, data...)
+	
+	return i.Send(packet, "")
 }

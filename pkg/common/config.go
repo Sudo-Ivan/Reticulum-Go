@@ -34,6 +34,10 @@ type InterfaceConfig struct {
     MaxReconnTries int    `toml:"max_reconnect_tries"`
     Bitrate        int64  `toml:"bitrate"`
     MTU           int    `toml:"mtu"`
+    GroupID       string
+    DiscoveryScope string
+	DiscoveryPort  int
+	DataPort       int
 }
 
 // ReticulumConfig represents the main configuration structure

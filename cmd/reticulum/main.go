@@ -24,24 +24,38 @@ func NewReticulum(cfg *common.ReticulumConfig) (*Reticulum, error) {
 		cfg = config.DefaultConfig()
 	}
 
-	// Initialize transport
 	t, err := transport.NewTransport(cfg)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to initialize transport: %v", err)
 	}
 
 	return &Reticulum{
-		config:    cfg,
-		transport: t,
+		config:     cfg,
+		transport:  t,
+		interfaces: make([]interfaces.Interface, 0),
 	}, nil
 }
 
 func (r *Reticulum) Start() error {
-	for _, ifaceConfig := range r.config.Interfaces {
+	log.Printf("Starting Reticulum...")
+
+	if err := r.transport.Start(); err != nil {
+		return fmt.Errorf("failed to start transport: %v", err)
+	}
+	log.Printf("Transport started successfully")
+
+	for name, ifaceConfig := range r.config.Interfaces {
+		if !ifaceConfig.Enabled {
+			log.Printf("Skipping disabled interface %s", name)
+			continue
+		}
+
+		log.Printf("Configuring interface %s (type=%s)...", name, ifaceConfig.Type)
 		var iface interfaces.Interface
 
 		switch ifaceConfig.Type {
 		case "TCPClientInterface":
+			log.Printf("Creating TCP client interface %s -> %s:%d", name, ifaceConfig.TargetHost, ifaceConfig.TargetPort)
 			client, err := interfaces.NewTCPClient(
 				ifaceConfig.Name,
 				ifaceConfig.TargetHost,
@@ -51,18 +65,16 @@ func (r *Reticulum) Start() error {
 				ifaceConfig.Enabled,
 			)
 			if err != nil {
-				log.Printf("Failed to create TCP interface %s: %v", ifaceConfig.Name, err)
+				if r.config.PanicOnInterfaceErr {
+					return fmt.Errorf("failed to create TCP client interface %s: %v", name, err)
+				}
+				log.Printf("Failed to create TCP client interface %s: %v", name, err)
 				continue
 			}
-
-			if err := client.Start(); err != nil {
-				log.Printf("Failed to start TCP interface %s: %v", ifaceConfig.Name, err)
-				continue
-			}
-
 			iface = client
 
 		case "TCPServerInterface":
+			log.Printf("Creating TCP server interface %s on %s:%d", name, ifaceConfig.Address, ifaceConfig.Port)
 			server, err := interfaces.NewTCPServer(
 				ifaceConfig.Name,
 				ifaceConfig.Address,
@@ -72,41 +84,51 @@ func (r *Reticulum) Start() error {
 				ifaceConfig.PreferIPv6,
 			)
 			if err != nil {
-				log.Printf("Failed to create TCP server interface %s: %v", ifaceConfig.Name, err)
+				if r.config.PanicOnInterfaceErr {
+					return fmt.Errorf("failed to create TCP server interface %s: %v", name, err)
+				}
+				log.Printf("Failed to create TCP server interface %s: %v", name, err)
 				continue
 			}
-
-			if err := server.Start(); err != nil {
-				log.Printf("Failed to start TCP server interface %s: %v", ifaceConfig.Name, err)
-				continue
-			}
-
 			iface = server
 
 		case "UDPInterface":
 			addr := fmt.Sprintf("%s:%d", ifaceConfig.Address, ifaceConfig.Port)
-
+			target := ""
+			if ifaceConfig.TargetAddress != "" {
+				target = fmt.Sprintf("%s:%d", ifaceConfig.TargetHost, ifaceConfig.TargetPort)
+			}
+			log.Printf("Creating UDP interface %s on %s -> %s", name, addr, target)
 			udp, err := interfaces.NewUDPInterface(
 				ifaceConfig.Name,
 				addr,
-				"", // No target address for server initially
+				target,
 				ifaceConfig.Enabled,
 			)
 			if err != nil {
-				log.Printf("Failed to create UDP interface %s: %v", ifaceConfig.Name, err)
+				if r.config.PanicOnInterfaceErr {
+					return fmt.Errorf("failed to create UDP interface %s: %v", name, err)
+				}
+				log.Printf("Failed to create UDP interface %s: %v", name, err)
 				continue
 			}
-
-			if err := udp.Start(); err != nil {
-				log.Printf("Failed to start UDP interface %s: %v", ifaceConfig.Name, err)
-				continue
-			}
-
 			iface = udp
 
 		case "AutoInterface":
-			log.Printf("AutoInterface type not yet implemented")
-			continue
+			log.Printf("Creating Auto interface %s (group=%s, discovery=%d, data=%d)",
+				name, ifaceConfig.GroupID, ifaceConfig.DiscoveryPort, ifaceConfig.DataPort)
+			auto, err := interfaces.NewAutoInterface(
+				ifaceConfig.Name,
+				ifaceConfig,
+			)
+			if err != nil {
+				if r.config.PanicOnInterfaceErr {
+					return fmt.Errorf("failed to create Auto interface %s: %v", name, err)
+				}
+				log.Printf("Failed to create Auto interface %s: %v", name, err)
+				continue
+			}
+			iface = auto
 
 		default:
 			log.Printf("Unknown interface type: %s", ifaceConfig.Type)
@@ -114,50 +136,71 @@ func (r *Reticulum) Start() error {
 		}
 
 		if iface != nil {
-			// Set packet callback to transport
-			iface.SetPacketCallback(r.transport.HandlePacket)
+			log.Printf("Starting interface %s...", name)
+			if err := iface.Start(); err != nil {
+				if r.config.PanicOnInterfaceErr {
+					return fmt.Errorf("failed to start interface %s: %v", name, err)
+				}
+				log.Printf("Failed to start interface %s: %v", name, err)
+				continue
+			}
+
+			netIface := iface.(common.NetworkInterface)
+
+			callback := func(data []byte, ni common.NetworkInterface) {
+				r.transport.HandlePacket(data, ni)
+			}
+
+			netIface.SetPacketCallback(callback)
 			r.interfaces = append(r.interfaces, iface)
 			log.Printf("Created and started interface %s (type=%v, enabled=%v)",
 				iface.GetName(), iface.GetType(), iface.IsEnabled())
+			log.Printf("Interface %s started successfully", name)
 		}
 	}
 
 	log.Printf("Reticulum initialized with config at: %s", r.config.ConfigPath)
+	log.Printf("Press Ctrl+C to stop...")
 	return nil
 }
 
 func (r *Reticulum) Stop() error {
+	for _, iface := range r.interfaces {
+		if err := iface.Stop(); err != nil {
+			log.Printf("Error stopping interface %s: %v", iface.GetName(), err)
+		}
+	}
+
 	if err := r.transport.Close(); err != nil {
-		return err
+		return fmt.Errorf("failed to close transport: %v", err)
 	}
 	return nil
 }
 
 func main() {
-	// Initialize configuration
+	log.Printf("Initializing Reticulum...")
+
 	cfg, err := config.InitConfig()
 	if err != nil {
 		log.Fatalf("Failed to initialize config: %v", err)
 	}
 
-	// Create new reticulum instance
 	r, err := NewReticulum(cfg)
 	if err != nil {
 		log.Fatalf("Failed to create Reticulum instance: %v", err)
 	}
 
-	// Start reticulum
 	if err := r.Start(); err != nil {
 		log.Fatalf("Failed to start Reticulum: %v", err)
 	}
 
-	// Wait for interrupt signal
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	<-sigChan
 
-	// Clean shutdown
+	log.Printf("\nShutting down...")
 	if err := r.Stop(); err != nil {
 		log.Printf("Error during shutdown: %v", err)
 	}
+	log.Printf("Goodbye!")
 }
