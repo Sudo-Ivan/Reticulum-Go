@@ -4,6 +4,14 @@
 
 Aiming for full spec compatibility with the Python version 0.8.8+. 
 
+`Go 1.23.4`
+
+Packages:
+
+- `github.com/pelletier/go-toml`
+- `golang.org/x/crypto`
+- `gopkg.in/yaml.v3`
+
 ## To-Do List
 
 ### Core Components (In Progress)
@@ -116,6 +124,7 @@ Aiming for full spec compatibility with the Python version 0.8.8+.
 ### Cleanup
 - [ ] Seperate Cryptography from identity.go to their own files.
 - [ ] Move constants to their own files.
+- [ ] Remove TOML stuff, use reticulum config.
 
 ### Other
 - [ ] Rate limiting
