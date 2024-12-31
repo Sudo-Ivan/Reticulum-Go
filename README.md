@@ -36,13 +36,13 @@ Packages:
 - [x] Cryptographic Primitives (Testing required)
   - [x] Ed25519
   - [x] Curve25519
-  - [x] AES-GCM
+  - [x] AES-CBC
   - [x] SHA-256
   - [x] HKDF
   - [x] Secure random number generation
   - [x] HMAC
 
-- [x] Packet Handling (In Progress)
+- [ ] Packet Handling (In Progress)
   - [x] Packet creation
   - [x] Packet validation
   - [x] Basic proof system
@@ -59,6 +59,28 @@ Packages:
   - [x] Network layer integration
   - [ ] Testing announce from go client to python client
   - [ ] Testing path finding and caching
+
+- [ ] Buffer System (In Progress)
+  - [ ] Raw channel reader/writer
+  - [ ] Buffered stream implementation
+  - [ ] Compression support
+  - [ ] Testing with Channel system
+  - [ ] Cross-client compatibility testing
+
+- [ ] Channel System (Not Started)
+  - [ ] Channel creation and management
+  - [ ] Message handling
+  - [ ] Channel encryption
+  - [ ] Channel authentication
+  - [ ] Channel callbacks
+  - [ ] Integration with Buffer system
+
+- [ ] Resolver System (Not Started)
+  - [ ] Name resolution
+  - [ ] Cache management
+  - [ ] Announce handling
+  - [ ] Path resolution
+  - [ ] Integration with Transport layer
 
 ### Interface Implementation (In Progress)
 - [x] UDP Interface
