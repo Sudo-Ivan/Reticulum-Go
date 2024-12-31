@@ -24,16 +24,17 @@ import (
 
 const (
 	CURVE = "Curve25519"
-	KEYSIZE = 512 // 256*2 bits
-	RATCHETSIZE = 256 // bits
-	RATCHET_EXPIRY = 2592000 // 60*60*24*30 seconds (30 days)
-	TRUNCATED_HASHLENGTH = 128 // bits
-	NAME_HASH_LENGTH = 80 // bits
+	KEYSIZE = 512 // Combined length of encryption key (256) and signing key (256)
+	RATCHETSIZE = 256 
+	RATCHET_EXPIRY = 2592000 // 30 days in seconds
+	TRUNCATED_HASHLENGTH = 128
+	NAME_HASH_LENGTH = 80
 	
-	TOKEN_OVERHEAD = 16 // AES block size in bytes
-	AES128_BLOCKSIZE = 16 // bytes
-	HASHLENGTH = 256 // bits 
-	SIGLENGTH = KEYSIZE // bits
+	// Token constants for Fernet-like spec
+	TOKEN_OVERHEAD = 16 // AES block size
+	AES128_BLOCKSIZE = 16
+	HASHLENGTH = 256
+	SIGLENGTH = KEYSIZE
 )
 
 type Identity struct {
@@ -209,37 +210,48 @@ func (i *Identity) Encrypt(plaintext []byte, ratchet []byte) ([]byte, error) {
 		return nil, errors.New("encryption failed: identity does not hold a public key")
 	}
 
-	// Generate ephemeral key pair
-	ephemeralKey, err := curve25519.X25519(make([]byte, 32), curve25519.Basepoint)
+	// Generate ephemeral keypair
+	ephemeralPrivKey := make([]byte, curve25519.ScalarSize)
+	if _, err := io.ReadFull(rand.Reader, ephemeralPrivKey); err != nil {
+		return nil, err
+	}
+	
+	ephemeralPubKey, err := curve25519.X25519(ephemeralPrivKey, curve25519.Basepoint)
 	if err != nil {
 		return nil, err
 	}
-	ephemeralPubBytes := ephemeralKey
 
-	var targetPublicKey []byte
+	// Use ratchet key if provided, otherwise use identity public key
+	targetKey := i.publicKey
 	if ratchet != nil {
-		targetPublicKey = ratchet
-	} else {
-		targetPublicKey = i.publicKey
+		targetKey = ratchet
 	}
 
-	// Generate shared key
-	sharedKey, err := curve25519.X25519(ephemeralKey, targetPublicKey)
+	// Generate shared secret
+	sharedSecret, err := curve25519.X25519(ephemeralPrivKey, targetKey) 
 	if err != nil {
 		return nil, err
 	}
 
 	// Derive encryption key using HKDF
-	derivedKey := hkdf.New(sha256.New, sharedKey, i.hash, nil)
+	kdf := hkdf.New(sha256.New, sharedSecret, i.GetSalt(), i.GetContext())
 	key := make([]byte, 32)
-	if _, err := io.ReadFull(derivedKey, key); err != nil {
+	if _, err := io.ReadFull(kdf, key); err != nil {
 		return nil, err
 	}
 
-	// Encrypt using AES-CBC
-	block, err := aes.NewCipher(key)
+	// Encrypt using AES-128-CBC with PKCS7 padding
+	block, err := aes.NewCipher(key[:16]) // Use AES-128
 	if err != nil {
 		return nil, err
+	}
+
+	// Add PKCS7 padding
+	padding := aes.BlockSize - len(plaintext)%aes.BlockSize
+	padtext := make([]byte, len(plaintext)+padding)
+	copy(padtext, plaintext)
+	for i := len(plaintext); i < len(padtext); i++ {
+		padtext[i] = byte(padding)
 	}
 
 	// Generate IV
@@ -248,22 +260,22 @@ func (i *Identity) Encrypt(plaintext []byte, ratchet []byte) ([]byte, error) {
 		return nil, err
 	}
 
-	// Pad plaintext
-	padding := aes.BlockSize - len(plaintext)%aes.BlockSize
-	padtext := make([]byte, len(plaintext)+padding)
-	copy(padtext, plaintext)
-	for i := len(plaintext); i < len(padtext); i++ {
-		padtext[i] = byte(padding)
-	}
-
 	// Encrypt
 	mode := cipher.NewCBCEncrypter(block, iv)
 	ciphertext := make([]byte, len(padtext))
 	mode.CryptBlocks(ciphertext, padtext)
 
-	// Combine ephemeral public key + IV + ciphertext
-	token := append(ephemeralPubBytes, iv...)
+	// Calculate HMAC
+	h := hmac.New(sha256.New, key)
+	h.Write(append(ephemeralPubKey, append(iv, ciphertext...)...))
+	mac := h.Sum(nil)
+
+	// Combine all components into final token
+	token := make([]byte, 0, len(ephemeralPubKey)+len(iv)+len(ciphertext)+len(mac))
+	token = append(token, ephemeralPubKey...)
+	token = append(token, iv...)
 	token = append(token, ciphertext...)
+	token = append(token, mac...)
 
 	return token, nil
 }
