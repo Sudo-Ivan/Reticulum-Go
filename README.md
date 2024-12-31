@@ -4,20 +4,20 @@ Reticulum Network Stack in Go.
 
 ## To-Do List
 
-### Core Components
+### Core Components (In Progress)
 - [x] Basic Configuration System
   - [x] Basic config structure
   - [x] Default settings
   - [x] Config file loading/saving
   - [x] Path management
 
-- [x] Constants Definition
+- [x] Constants Definition (Testing required)
   - [x] Packet constants
   - [x] MTU constants
   - [x] Header types
   - [x] Additional protocol constants
 
-- [x] Identity Management
+- [x] Identity Management (Testing required)
   - [x] Identity creation
   - [x] Key pair generation
   - [x] Identity storage/recall
@@ -25,7 +25,7 @@ Reticulum Network Stack in Go.
   - [x] Signature verification
   - [x] Hash functions
 
-- [x] Cryptographic Primitives
+- [x] Cryptographic Primitives (Testing required)
   - [x] Ed25519
   - [x] Curve25519
   - [x] AES-GCM
@@ -34,7 +34,7 @@ Reticulum Network Stack in Go.
   - [x] Secure random number generation
   - [x] HMAC
 
-- [x] Packet Handling
+- [x] Packet Handling (In Progress)
   - [x] Packet creation
   - [x] Packet validation
   - [x] Basic proof system
@@ -42,7 +42,7 @@ Reticulum Network Stack in Go.
   - [x] Signature verification
   - [ ] Testing of packet encrypt/decrypt/sign/proof
 
-- [x] Transport Layer
+- [x] Transport Layer (In Progress)
   - [x] Path management
   - [x] Basic packet routing
   - [x] Announce handling
@@ -52,7 +52,7 @@ Reticulum Network Stack in Go.
   - [ ] Testing announce from go client to python client
   - [ ] Testing path finding and caching
 
-### Interface Implementation
+### Interface Implementation (In Progress)
 - [x] UDP Interface
 - [x] TCP Interface
 - [x] Auto Interface
@@ -71,7 +71,7 @@ Reticulum Network Stack in Go.
   - [ ] Roaming mode
   - [ ] Boundary mode
 
-### Destination System
+### Destination System (Testing required)
 - [x] Destination creation
 - [x] Destination types (IN/OUT)
 - [x] Destination aspects
@@ -79,7 +79,7 @@ Reticulum Network Stack in Go.
 - [x] Ratchet support
 - [x] Request handlers
 
-### Link System
+### Link System (Testing required)
 - [x] Link establishment
 - [x] Link teardown
 - [x] Basic packet transfer
@@ -89,7 +89,7 @@ Reticulum Network Stack in Go.
 - [x] Session key management
 - [x] Link state tracking
 
-### Resource System
+### Resource System (Testing required)
 - [x] Resource creation
 - [x] Resource transfer
 - [x] Compression
@@ -107,6 +107,10 @@ Reticulum Network Stack in Go.
 ### Documentation
 - [ ] API documentation
 - [ ] Usage examples
+
+### Cleanup
+- [ ] Seperate Cryptography from identity.go to their own files.
+- [ ] Move constants to their own files.
 
 ### Other
 - [ ] Rate limiting
