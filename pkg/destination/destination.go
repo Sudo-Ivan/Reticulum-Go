@@ -44,34 +44,34 @@ type RequestHandler struct {
 }
 
 type Destination struct {
-	identity        *identity.Identity
-	direction       byte
-	destType        byte
-	appName         string
-	aspects         []string
-	hash           []byte
-	
-	acceptsLinks    bool
-	proofStrategy   byte
-	
-	packetCallback  PacketCallback
-	proofCallback   ProofRequestedCallback
-	linkCallback    LinkEstablishedCallback
-	
+	identity  *identity.Identity
+	direction byte
+	destType  byte
+	appName   string
+	aspects   []string
+	hash      []byte
+
+	acceptsLinks  bool
+	proofStrategy byte
+
+	packetCallback PacketCallback
+	proofCallback  ProofRequestedCallback
+	linkCallback   LinkEstablishedCallback
+
 	ratchetsEnabled bool
 	ratchetPath     string
 	ratchetCount    int
 	ratchetInterval int
 	enforceRatchets bool
-	
-	defaultAppData  []byte
+
+	defaultAppData []byte
 	mutex          sync.RWMutex
 
 	requestHandlers map[string]*RequestHandler
-	callbacks      struct {
-		packetReceived    common.PacketCallback
-		proofRequested    common.ProofRequestedCallback
-		linkEstablished   common.LinkEstablishedCallback
+	callbacks       struct {
+		packetReceived  common.PacketCallback
+		proofRequested  common.ProofRequestedCallback
+		linkEstablished common.LinkEstablishedCallback
 	}
 }
 
@@ -95,17 +95,17 @@ func New(id *identity.Identity, direction byte, destType byte, appName string, a
 
 	// Generate destination hash
 	d.hash = d.Hash()
-	
+
 	return d, nil
 }
 
 func (d *Destination) Hash() []byte {
 	nameHash := sha256.Sum256([]byte(d.ExpandName()))
 	identityHash := sha256.Sum256(d.identity.GetPublicKey())
-	
+
 	combined := append(nameHash[:], identityHash[:]...)
 	finalHash := sha256.Sum256(combined)
-	
+
 	return finalHash[:16] // Truncated to 128 bits
 }
 
@@ -220,7 +220,7 @@ func (d *Destination) SetProofStrategy(strategy byte) {
 func (d *Destination) EnableRatchets(path string) bool {
 	d.mutex.Lock()
 	defer d.mutex.Unlock()
-	
+
 	d.ratchetsEnabled = true
 	d.ratchetPath = path
 	return true
@@ -236,7 +236,7 @@ func (d *Destination) SetRetainedRatchets(count int) bool {
 	if count < 1 {
 		return false
 	}
-	
+
 	d.mutex.Lock()
 	defer d.mutex.Unlock()
 	d.ratchetCount = count
@@ -247,7 +247,7 @@ func (d *Destination) SetRatchetInterval(interval int) bool {
 	if interval < 1 {
 		return false
 	}
-	
+
 	d.mutex.Lock()
 	defer d.mutex.Unlock()
 	d.ratchetInterval = interval
@@ -340,7 +340,7 @@ func (d *Destination) Decrypt(ciphertext []byte) ([]byte, error) {
 
 	// Create empty ratchet receiver to get latest ratchet ID if available
 	ratchetReceiver := &common.RatchetIDReceiver{}
-	
+
 	// Call Decrypt with full parameter list:
 	// - ciphertext: the encrypted data
 	// - ratchets: nil since we're not providing specific ratchets
@@ -366,4 +366,4 @@ func (d *Destination) GetPublicKey() []byte {
 
 func (d *Destination) GetIdentity() *identity.Identity {
 	return d.identity
-} 
+}
