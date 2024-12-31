@@ -20,7 +20,7 @@ type Path struct {
 // Common callbacks
 type ProofRequestedCallback func([]byte, []byte)
 type LinkEstablishedCallback func(interface{})
-type PacketCallback func([]byte, interface{})
+type PacketCallback func([]byte, NetworkInterface)
 
 // RequestHandler manages path requests and responses
 type RequestHandler struct {

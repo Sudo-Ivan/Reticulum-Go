@@ -9,6 +9,7 @@ const (
 	IF_TYPE_I2P
 	IF_TYPE_BLUETOOTH
 	IF_TYPE_SERIAL
+	IF_TYPE_AUTO
 
 	// Interface Modes
 	IF_MODE_FULL InterfaceMode = iota

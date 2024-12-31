@@ -644,7 +644,7 @@ func (t *Transport) handleAnnouncePacket(data []byte, iface common.NetworkInterf
 
 	// Use identity package's GetRandomHash
 	announceHash := identity.GetRandomHash()
-	
+
 	// Use interface name in announce handling
 	if iface != nil {
 		t.HandleAnnounce(destHash, identityData, appData, announceHash)
@@ -788,4 +788,10 @@ func (l *Link) HandleResource(resource interface{}) bool {
 	default:
 		return false
 	}
+}
+
+func (t *Transport) Start() error {
+	t.mutex.Lock()
+	defer t.mutex.Unlock()
+	return nil
 }

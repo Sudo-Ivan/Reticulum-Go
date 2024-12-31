@@ -49,7 +49,7 @@ const (
 
 type AnnounceHandler interface {
 	AspectFilter() []string
-	ReceivedAnnounce(destinationHash []byte, announcedIdentity *identity.Identity, appData []byte) error
+	ReceivedAnnounce(destinationHash []byte, announcedIdentity interface{}, appData []byte) error
 	ReceivePathResponses() bool
 }
 

@@ -16,7 +16,7 @@ const (
 
 func DefaultConfig() *common.ReticulumConfig {
 	return &common.ReticulumConfig{
-		EnableTransport:     false,
+		EnableTransport:     true,
 		ShareInstance:       true,
 		SharedInstancePort:  DefaultSharedInstancePort,
 		InstanceControlPort: DefaultInstanceControlPort,
@@ -74,26 +74,38 @@ func SaveConfig(cfg *common.ReticulumConfig) error {
 func CreateDefaultConfig(path string) error {
 	cfg := DefaultConfig()
 
-	// Add default interface
-	cfg.Interfaces["Default Interface"] = &common.InterfaceConfig{
-		Type:    "AutoInterface",
-		Enabled: false,
+	// Add Auto Interface
+	cfg.Interfaces["Auto Discovery"] = &common.InterfaceConfig{
+		Type:           "AutoInterface",
+		Enabled:        true,
+		GroupID:        "reticulum",
+		DiscoveryScope: "link",
+		DiscoveryPort:  29716,
+		DataPort:       42671,
 	}
 
-	// Add default quad4net interface
-	cfg.Interfaces["quad4net tcp"] = &common.InterfaceConfig{
+	// Add RNS Amsterdam Testnet interface
+	cfg.Interfaces["RNS Testnet Amsterdam"] = &common.InterfaceConfig{
 		Type:       "TCPClientInterface",
 		Enabled:    true,
-		TargetHost: "rns.quad4.io",
+		TargetHost: "amsterdam.connect.reticulum.network",
+		TargetPort: 4965,
+	}
+
+	// Add RNS BetweenTheBorders Testnet interface
+	cfg.Interfaces["RNS Testnet BetweenTheBorders"] = &common.InterfaceConfig{
+		Type:       "TCPClientInterface",
+		Enabled:    true,
+		TargetHost: "reticulum.betweentheborders.com",
 		TargetPort: 4242,
 	}
 
-	// Add default UDP interface
-	cfg.Interfaces["local udp"] = &common.InterfaceConfig{
+	// Add local UDP interface
+	cfg.Interfaces["Local UDP"] = &common.InterfaceConfig{
 		Type:    "UDPInterface",
 		Enabled: true,
 		Address: "0.0.0.0",
-		Port:    37696, // Default RNS port
+		Port:    37696,
 	}
 
 	data, err := toml.Marshal(cfg)
@@ -101,7 +113,6 @@ func CreateDefaultConfig(path string) error {
 		return err
 	}
 
-	// Create config directory if it doesn't exist
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return err
 	}
