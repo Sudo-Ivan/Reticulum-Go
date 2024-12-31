@@ -271,17 +271,20 @@ func (r *RequestReceipt) Concluded() bool {
 	return status == STATUS_ACTIVE || status == STATUS_FAILED
 }
 
-func (l *Link) TrackPhyStats(rssi float64, snr float64, q float64) {
+func (l *Link) TrackPhyStats(track bool) {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
-	
-	l.rssi = rssi
-	l.snr = snr
-	l.q = q
+	l.trackPhyStats = track
 }
 
-func (l *Link) UpdatePhyStats(rssi float64, snr float64, q float64) {
-	l.TrackPhyStats(rssi, snr, q)
+func (l *Link) UpdatePhyStats(rssi, snr, q float64) {
+	l.mutex.Lock()
+	defer l.mutex.Unlock()
+	if l.trackPhyStats {
+		l.rssi = rssi
+		l.snr = snr
+		l.q = q
+	}
 }
 
 func (l *Link) GetRSSI() float64 {
