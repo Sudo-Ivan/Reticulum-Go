@@ -6,17 +6,26 @@ panic_on_interface_error = false
 loglevel = 4
 
 [interfaces]
-  [interfaces."Local TCP"]
+  [interfaces."RNS Testnet Amsterdam"]
   type = "TCPClientInterface"
   enabled = true
-  target_host = "rns.quad4.io"
-  target_port = 4243
+  target_host = "amsterdam.connect.reticulum.network"
+  target_port = 4965
 
-  [interfaces."Local UDP"]
-  type = "UDPInterface"
+  [interfaces."RNS Testnet BetweenTheBorders"]
+  type = "TCPClientInterface"
   enabled = true
-  interface = "lo"
-  address = "127.0.0.1"
-  port = 37430
-  target_address = "127.0.0.1"
-  target_port = 37428 
+  target_host = "reticulum.betweentheborders.com"
+  target_port = 4242
+
+  [[Local UDP]]
+    type = "UDPInterface"
+    interface_enabled = true
+    address = "0.0.0.0"
+    port = 37698
+
+  [[Auto Discovery]]
+    type = "AutoInterface"
+    interface_enabled = true
+    discovery_port = 29718
+    data_port = 42673 
