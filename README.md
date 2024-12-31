@@ -1,6 +1,8 @@
 # Reticulum-Go
 
-Reticulum Network Stack in Go.
+[Reticulum Network](https://github.com/markqvist/Reticulum) implementation in Go
+
+Aiming for full spec compatibility with the Python version 0.8.8+. 
 
 ## To-Do List
 
@@ -96,6 +98,9 @@ Reticulum Network Stack in Go.
 - [x] Progress tracking
 - [x] Segmentation
 - [x] Cleanup routines
+
+### Compatibility
+- [ ] RNS Utilities Compatibility
 
 ### Testing & Validation
 - [ ] Unit tests for all components (Link, Resource, Destination, Identity, Packet, Transport, Interface)
