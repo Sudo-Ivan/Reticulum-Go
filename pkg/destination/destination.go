@@ -322,7 +322,8 @@ func (d *Destination) Encrypt(plaintext []byte) ([]byte, error) {
 		if key == nil {
 			return nil, errors.New("no ratchet key available")
 		}
-		return d.identity.EncryptSymmetric(plaintext, key)
+		// CBC encryption with HMAC for group messages
+		return d.identity.EncryptWithHMAC(plaintext, key)
 	default:
 		return nil, errors.New("unsupported destination type for encryption")
 	}
