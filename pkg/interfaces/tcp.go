@@ -41,9 +41,7 @@ type TCPClientInterface struct {
 	maxReconnectTries int
 	packetBuffer      []byte
 	packetType        byte
-	packetCallback    common.PacketCallback
 	mutex             sync.RWMutex
-	detached          bool
 	enabled           bool
 }
 
@@ -65,7 +63,7 @@ func NewTCPClient(name string, targetHost string, targetPort int, kissFraming bo
 			return nil, err
 		}
 		tc.conn = conn
-		tc.online = true
+		tc.Online = true
 	}
 
 	return tc, nil
@@ -75,12 +73,12 @@ func (tc *TCPClientInterface) Start() error {
 	tc.mutex.Lock()
 	defer tc.mutex.Unlock()
 
-	if !tc.enabled {
+	if !tc.Enabled {
 		return fmt.Errorf("interface not enabled")
 	}
 
 	if tc.conn != nil {
-		tc.online = true
+		tc.Online = true
 		return nil
 	}
 
@@ -90,7 +88,7 @@ func (tc *TCPClientInterface) Start() error {
 		return err
 	}
 	tc.conn = conn
-	tc.online = true
+	tc.Online = true
 	return nil
 }
 
@@ -254,7 +252,7 @@ func (tc *TCPClientInterface) SetPacketCallback(cb common.PacketCallback) {
 func (tc *TCPClientInterface) IsEnabled() bool {
 	tc.mutex.RLock()
 	defer tc.mutex.RUnlock()
-	return tc.enabled && tc.online && !tc.detached
+	return tc.enabled && tc.Online && !tc.Detached
 }
 
 func (tc *TCPClientInterface) GetName() string {
@@ -270,13 +268,13 @@ func (tc *TCPClientInterface) GetPacketCallback() common.PacketCallback {
 func (tc *TCPClientInterface) IsDetached() bool {
 	tc.mutex.RLock()
 	defer tc.mutex.RUnlock()
-	return tc.detached
+	return tc.Detached
 }
 
 func (tc *TCPClientInterface) IsOnline() bool {
 	tc.mutex.RLock()
 	defer tc.mutex.RUnlock()
-	return tc.online
+	return tc.Online
 }
 
 func (tc *TCPClientInterface) reconnect() {
@@ -297,7 +295,7 @@ func (tc *TCPClientInterface) reconnect() {
 		if err == nil {
 			tc.mutex.Lock()
 			tc.conn = conn
-			tc.online = true
+			tc.Online = true
 			tc.neverConnected = false
 			tc.reconnecting = false
 			tc.mutex.Unlock()
@@ -325,13 +323,13 @@ func (tc *TCPClientInterface) reconnect() {
 func (tc *TCPClientInterface) Enable() {
 	tc.mutex.Lock()
 	defer tc.mutex.Unlock()
-	tc.online = true
+	tc.Online = true
 }
 
 func (tc *TCPClientInterface) Disable() {
 	tc.mutex.Lock()
 	defer tc.mutex.Unlock()
-	tc.online = false
+	tc.Online = false
 }
 
 type TCPServerInterface struct {
@@ -344,18 +342,17 @@ type TCPServerInterface struct {
 	kissFraming    bool
 	i2pTunneled    bool
 	packetCallback common.PacketCallback
-	detached       bool
 }
 
 func NewTCPServer(name string, bindAddr string, bindPort int, kissFraming bool, i2pTunneled bool, preferIPv6 bool) (*TCPServerInterface, error) {
 	ts := &TCPServerInterface{
 		BaseInterface: BaseInterface{
-			name:     name,
-			mode:     common.IF_MODE_FULL,
-			ifType:   common.IF_TYPE_TCP,
-			online:   false,
-			mtu:      common.DEFAULT_MTU,
-			detached: false,
+			Name:     name,
+			Mode:     common.IF_MODE_FULL,
+			Type:     common.IF_TYPE_TCP,
+			Online:   false,
+			MTU:      common.DEFAULT_MTU,
+			Detached: false,
 		},
 		connections: make(map[string]net.Conn),
 		bindAddr:    bindAddr,
@@ -377,7 +374,7 @@ func (ts *TCPServerInterface) String() string {
 			addr = "0.0.0.0"
 		}
 	}
-	return fmt.Sprintf("TCPServerInterface[%s/%s:%d]", ts.name, addr, ts.bindPort)
+	return fmt.Sprintf("TCPServerInterface[%s/%s:%d]", ts.Name, addr, ts.bindPort)
 }
 
 func (ts *TCPServerInterface) SetPacketCallback(callback common.PacketCallback) {
@@ -393,33 +390,51 @@ func (ts *TCPServerInterface) GetPacketCallback() common.PacketCallback {
 }
 
 func (ts *TCPServerInterface) IsEnabled() bool {
-	return ts.online
+	ts.mutex.RLock()
+	defer ts.mutex.RUnlock()
+	return ts.BaseInterface.Enabled && ts.BaseInterface.Online && !ts.BaseInterface.Detached
 }
 
 func (ts *TCPServerInterface) GetName() string {
-	return ts.name
+	return ts.Name
 }
 
 func (ts *TCPServerInterface) IsDetached() bool {
 	ts.mutex.RLock()
 	defer ts.mutex.RUnlock()
-	return ts.detached
+	return ts.BaseInterface.Detached
 }
 
 func (ts *TCPServerInterface) IsOnline() bool {
 	ts.mutex.RLock()
 	defer ts.mutex.RUnlock()
-	return ts.online
+	return ts.Online
 }
 
 func (ts *TCPServerInterface) Enable() {
 	ts.mutex.Lock()
 	defer ts.mutex.Unlock()
-	ts.online = true
+	ts.Online = true
 }
 
 func (ts *TCPServerInterface) Disable() {
 	ts.mutex.Lock()
 	defer ts.mutex.Unlock()
-	ts.online = false
+	ts.Online = false
+}
+
+func (ts *TCPServerInterface) Start() error {
+	ts.mutex.Lock()
+	defer ts.mutex.Unlock()
+
+	ts.Online = true
+	return nil
+}
+
+func (ts *TCPServerInterface) Stop() error {
+	ts.mutex.Lock()
+	defer ts.mutex.Unlock()
+
+	ts.Online = false
+	return nil
 }

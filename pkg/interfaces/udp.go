@@ -16,11 +16,6 @@ type UDPInterface struct {
 	targetAddr *net.UDPAddr
 	mutex      sync.RWMutex
 	readBuffer []byte
-	txBytes    uint64
-	rxBytes    uint64
-	mtu        int
-	bitrate    int
-	enabled    bool
 }
 
 func NewUDPInterface(name string, addr string, target string, enabled bool) (*UDPInterface, error) {
@@ -39,44 +34,42 @@ func NewUDPInterface(name string, addr string, target string, enabled bool) (*UD
 
 	ui := &UDPInterface{
 		BaseInterface: NewBaseInterface(name, common.IF_TYPE_UDP, enabled),
-		addr:         udpAddr,
-		targetAddr:   targetAddr,
-		readBuffer:   make([]byte, common.DEFAULT_MTU),
-		mtu:         common.DEFAULT_MTU,
-		enabled:     enabled,
+		addr:          udpAddr,
+		targetAddr:    targetAddr,
+		readBuffer:    make([]byte, common.DEFAULT_MTU),
 	}
 
 	return ui, nil
 }
 
 func (ui *UDPInterface) GetName() string {
-	return ui.name
+	return ui.Name
 }
 
 func (ui *UDPInterface) GetType() common.InterfaceType {
-	return ui.ifType
+	return ui.Type
 }
 
 func (ui *UDPInterface) GetMode() common.InterfaceMode {
-	return ui.mode
+	return ui.Mode
 }
 
 func (ui *UDPInterface) IsOnline() bool {
 	ui.mutex.RLock()
 	defer ui.mutex.RUnlock()
-	return ui.online
+	return ui.Online
 }
 
 func (ui *UDPInterface) IsDetached() bool {
 	ui.mutex.RLock()
 	defer ui.mutex.RUnlock()
-	return ui.detached
+	return ui.Detached
 }
 
 func (ui *UDPInterface) Detach() {
 	ui.mutex.Lock()
 	defer ui.mutex.Unlock()
-	ui.detached = true
+	ui.Detached = true
 	if ui.conn != nil {
 		ui.conn.Close()
 	}
@@ -128,7 +121,7 @@ func (ui *UDPInterface) ProcessOutgoing(data []byte) error {
 	}
 
 	ui.mutex.Lock()
-	ui.txBytes += uint64(len(data))
+	ui.TxBytes += uint64(len(data))
 	ui.mutex.Unlock()
 
 	return nil
@@ -141,33 +134,33 @@ func (ui *UDPInterface) GetConn() net.Conn {
 func (ui *UDPInterface) GetTxBytes() uint64 {
 	ui.mutex.RLock()
 	defer ui.mutex.RUnlock()
-	return ui.txBytes
+	return ui.TxBytes
 }
 
 func (ui *UDPInterface) GetRxBytes() uint64 {
 	ui.mutex.RLock()
 	defer ui.mutex.RUnlock()
-	return ui.rxBytes
+	return ui.RxBytes
 }
 
 func (ui *UDPInterface) GetMTU() int {
-	return ui.mtu
+	return ui.MTU
 }
 
 func (ui *UDPInterface) GetBitrate() int {
-	return ui.bitrate
+	return int(ui.Bitrate)
 }
 
 func (ui *UDPInterface) Enable() {
 	ui.mutex.Lock()
 	defer ui.mutex.Unlock()
-	ui.online = true
+	ui.Online = true
 }
 
 func (ui *UDPInterface) Disable() {
 	ui.mutex.Lock()
 	defer ui.mutex.Unlock()
-	ui.online = false
+	ui.Online = false
 }
 
 func (ui *UDPInterface) Start() error {
@@ -176,12 +169,12 @@ func (ui *UDPInterface) Start() error {
 		return err
 	}
 	ui.conn = conn
-	ui.online = true
+	ui.Online = true
 	return nil
 }
 
 func (ui *UDPInterface) readLoop() {
-	buffer := make([]byte, ui.mtu)
+	buffer := make([]byte, ui.MTU)
 	for {
 		if ui.IsDetached() {
 			return
@@ -196,7 +189,7 @@ func (ui *UDPInterface) readLoop() {
 		}
 
 		ui.mutex.Lock()
-		ui.rxBytes += uint64(n)
+		ui.RxBytes += uint64(n)
 		ui.mutex.Unlock()
 
 		log.Printf("Received %d bytes from %s", n, addr.String())
@@ -210,5 +203,5 @@ func (ui *UDPInterface) readLoop() {
 func (ui *UDPInterface) IsEnabled() bool {
 	ui.mutex.RLock()
 	defer ui.mutex.RUnlock()
-	return ui.enabled && ui.online && !ui.detached
+	return ui.Enabled && ui.Online && !ui.Detached
 }

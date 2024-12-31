@@ -13,13 +13,23 @@ import (
 const (
 	BITRATE_MINIMUM = 5 // Minimum required bitrate in bits/sec
 	MODE_FULL       = 0x01
+	
+	// Interface modes
+	MODE_GATEWAY      = 0x02
+	MODE_ACCESS_POINT = 0x03
+	MODE_ROAMING     = 0x04
+	MODE_BOUNDARY    = 0x05
+
+	// Interface types
+	TYPE_UDP = 0x01
+	TYPE_TCP = 0x02
 )
 
 type Interface interface {
 	GetName() string
 	GetType() common.InterfaceType
 	GetMode() common.InterfaceMode
-	IsOnline() bool
+	IsOnline() bool 
 	IsDetached() bool
 	IsEnabled() bool
 	Detach()
@@ -28,43 +38,65 @@ type Interface interface {
 	Send(data []byte, addr string) error
 	SetPacketCallback(common.PacketCallback)
 	GetPacketCallback() common.PacketCallback
+	ProcessIncoming([]byte)
+	ProcessOutgoing([]byte) error
+	SendPathRequest([]byte) error
+	SendLinkPacket([]byte, []byte, time.Time) error
+	Start() error
+	Stop() error
+	GetMTU() int
+	GetConn() net.Conn
 }
 
 type BaseInterface struct {
-	common.BaseInterface
-	name           string
-	mode           common.InterfaceMode
-	ifType         common.InterfaceType
-	online         bool
-	enabled        bool
-	detached       bool
-	mtu            int
+	Name     string
+	Mode     common.InterfaceMode
+	Type     common.InterfaceType
+	Online   bool
+	Enabled  bool
+	Detached bool
+	IN       bool
+	OUT      bool
+	MTU      int
+	Bitrate  int64
+	TxBytes  uint64
+	RxBytes  uint64
+	
 	mutex          sync.RWMutex
 	packetCallback common.PacketCallback
 }
 
 func NewBaseInterface(name string, ifType common.InterfaceType, enabled bool) BaseInterface {
 	return BaseInterface{
-		name:     name,
-		mode:     common.IF_MODE_FULL,
-		ifType:   ifType,
-		online:   false,
-		enabled:  enabled,
-		detached: false,
-		mtu:      common.DEFAULT_MTU,
+		Name:     name,
+		Mode:     common.IF_MODE_FULL,
+		Type:     ifType,
+		Online:   false,
+		Enabled:  enabled,
+		Detached: false,
+		IN:       false,
+		OUT:      false,
+		MTU:      common.DEFAULT_MTU,
+		Bitrate:  BITRATE_MINIMUM,
 	}
 }
 
 func (i *BaseInterface) SetPacketCallback(callback common.PacketCallback) {
-	i.Mutex.Lock()
-	defer i.Mutex.Unlock()
-	i.PacketCallback = callback
+	i.mutex.Lock()
+	defer i.mutex.Unlock()
+	i.packetCallback = callback
+}
+
+func (i *BaseInterface) GetPacketCallback() common.PacketCallback {
+	i.mutex.RLock()
+	defer i.mutex.RUnlock()
+	return i.packetCallback
 }
 
 func (i *BaseInterface) ProcessIncoming(data []byte) {
-	i.Mutex.RLock()
-	callback := i.PacketCallback
-	i.Mutex.RUnlock()
+	i.mutex.RLock()
+	callback := i.packetCallback
+	i.mutex.RUnlock()
 
 	if callback != nil {
 		callback(data, i)
@@ -74,15 +106,11 @@ func (i *BaseInterface) ProcessIncoming(data []byte) {
 }
 
 func (i *BaseInterface) ProcessOutgoing(data []byte) error {
+	if !i.Online || i.Detached {
+		return fmt.Errorf("interface offline or detached")
+	}
 	i.TxBytes += uint64(len(data))
 	return nil
-}
-
-func (i *BaseInterface) Detach() {
-	i.Mutex.Lock()
-	defer i.Mutex.Unlock()
-	i.Detached = true
-	i.Online = false
 }
 
 func (i *BaseInterface) SendPathRequest(packet []byte) error {
@@ -90,8 +118,8 @@ func (i *BaseInterface) SendPathRequest(packet []byte) error {
 		return fmt.Errorf("interface offline or detached")
 	}
 
-	frame := make([]byte, 0, len(packet)+2)
-	frame = append(frame, 0x01)
+	frame := make([]byte, 0, len(packet)+1)
+	frame = append(frame, 0x01) // Path request type
 	frame = append(frame, packet...)
 
 	return i.ProcessOutgoing(frame)
@@ -103,32 +131,46 @@ func (i *BaseInterface) SendLinkPacket(dest []byte, data []byte, timestamp time.
 	}
 
 	frame := make([]byte, 0, len(dest)+len(data)+9)
-	frame = append(frame, 0x02)
+	frame = append(frame, 0x02) // Link packet type
 	frame = append(frame, dest...)
 
 	ts := make([]byte, 8)
 	binary.BigEndian.PutUint64(ts, uint64(timestamp.Unix()))
 	frame = append(frame, ts...)
-
 	frame = append(frame, data...)
 
 	return i.ProcessOutgoing(frame)
 }
 
-func (i *BaseInterface) Start() error {
-	return nil
+func (i *BaseInterface) Detach() {
+	i.mutex.Lock()
+	defer i.mutex.Unlock()
+	i.Detached = true
+	i.Online = false
 }
 
-func (i *BaseInterface) Stop() error {
-	return nil
+func (i *BaseInterface) IsEnabled() bool {
+	i.mutex.RLock() 
+	defer i.mutex.RUnlock()
+	return i.Enabled && i.Online && !i.Detached
 }
 
-func (i *BaseInterface) Send(data []byte, address string) error {
-	return i.ProcessOutgoing(data)
+func (i *BaseInterface) Enable() {
+	i.mutex.Lock()
+	defer i.mutex.Unlock()
+	i.Enabled = true
+	i.Online = true
 }
 
-func (i *BaseInterface) Receive() ([]byte, string, error) {
-	return nil, "", nil
+func (i *BaseInterface) Disable() {
+	i.mutex.Lock()
+	defer i.mutex.Unlock()
+	i.Enabled = false
+	i.Online = false
+}
+
+func (i *BaseInterface) GetName() string {
+	return i.Name
 }
 
 func (i *BaseInterface) GetType() common.InterfaceType {
@@ -143,30 +185,31 @@ func (i *BaseInterface) GetMTU() int {
 	return i.MTU
 }
 
-func (i *BaseInterface) GetName() string {
-	return i.Name
+func (i *BaseInterface) IsOnline() bool {
+	i.mutex.RLock()
+	defer i.mutex.RUnlock()
+	return i.Online
+}
+
+func (i *BaseInterface) IsDetached() bool {
+	i.mutex.RLock()
+	defer i.mutex.RUnlock()
+	return i.Detached
+}
+
+// Default implementations that should be overridden by specific interfaces
+func (i *BaseInterface) Start() error {
+	return nil
+}
+
+func (i *BaseInterface) Stop() error {
+	return nil
+}
+
+func (i *BaseInterface) Send(data []byte, address string) error {
+	return i.ProcessOutgoing(data)
 }
 
 func (i *BaseInterface) GetConn() net.Conn {
 	return nil
-}
-
-func (i *BaseInterface) IsEnabled() bool {
-	i.mutex.RLock()
-	defer i.mutex.RUnlock()
-	return i.enabled && i.online && !i.detached
-}
-
-func (i *BaseInterface) Enable() {
-	i.mutex.Lock()
-	defer i.mutex.Unlock()
-	i.enabled = true
-	i.online = true
-}
-
-func (i *BaseInterface) Disable() {
-	i.mutex.Lock()
-	defer i.mutex.Unlock()
-	i.enabled = false
-	i.online = false
 }
