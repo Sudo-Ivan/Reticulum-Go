@@ -1,6 +1,6 @@
 # Reticulum-Go
 
-[Reticulum Network](https://github.com/markqvist/Reticulum) implementation in Go
+[Reticulum Network](https://github.com/markqvist/Reticulum) implementation in Go.
 
 Aiming for full spec compatibility with the Python version 0.8.8+. 
 
@@ -8,9 +8,7 @@ Aiming for full spec compatibility with the Python version 0.8.8+.
 
 Packages:
 
-- `github.com/pelletier/go-toml`
 - `golang.org/x/crypto`
-- `gopkg.in/yaml.v3`
 
 ## To-Do List
 
@@ -108,7 +106,9 @@ Packages:
 - [x] Cleanup routines
 
 ### Compatibility
-- [ ] RNS Utilities Compatibility
+- [ ] RNS Utilities.
+- [ ] Reticulum config.
+
 
 ### Testing & Validation
 - [ ] Unit tests for all components (Link, Resource, Destination, Identity, Packet, Transport, Interface)
@@ -124,7 +124,7 @@ Packages:
 ### Cleanup
 - [ ] Seperate Cryptography from identity.go to their own files.
 - [ ] Move constants to their own files.
-- [ ] Remove TOML stuff, use reticulum config.
+- [ ] Remove default community interfaces in default config creation after testing.
 
 ### Other
 - [ ] Rate limiting
