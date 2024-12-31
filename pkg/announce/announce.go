@@ -261,3 +261,32 @@ func (a *Announce) CreatePacket() []byte {
 
 	return packet
 }
+
+type AnnouncePacket struct {
+	Data []byte
+}
+
+func NewAnnouncePacket(pubKey []byte, appData []byte, announceID []byte) *AnnouncePacket {
+	packet := &AnnouncePacket{}
+	
+	// Build packet data
+	packet.Data = make([]byte, 0, len(pubKey)+len(appData)+len(announceID)+4)
+	
+	// Add header
+	packet.Data = append(packet.Data, PACKET_TYPE_ANNOUNCE)
+	packet.Data = append(packet.Data, ANNOUNCE_IDENTITY)
+	
+	// Add public key
+	packet.Data = append(packet.Data, pubKey...)
+	
+	// Add app data length and content
+	appDataLen := make([]byte, 2)
+	binary.BigEndian.PutUint16(appDataLen, uint16(len(appData)))
+	packet.Data = append(packet.Data, appDataLen...)
+	packet.Data = append(packet.Data, appData...)
+	
+	// Add announce ID
+	packet.Data = append(packet.Data, announceID...)
+	
+	return packet
+}
