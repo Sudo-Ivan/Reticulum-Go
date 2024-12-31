@@ -50,6 +50,12 @@ const (
 	SINGLE = 0x00
 	GROUP  = 0x01
 	PLAIN  = 0x02
+
+	// Link status constants
+	STATUS_NEW    = 0
+	STATUS_ACTIVE = 1
+	STATUS_CLOSED = 2
+	STATUS_FAILED = 3
 )
 
 type PathInfo struct {
@@ -151,6 +157,7 @@ type Link struct {
 	physicalStats       bool
 	staleTime           time.Duration
 	staleGrace          time.Duration
+	status              int
 }
 
 type Destination struct {
@@ -218,9 +225,11 @@ func (l *Link) Teardown() {
 	}
 }
 
-func (l *Link) Send(data []byte) error {
+func (l *Link) Send(data []byte) interface{} {
+	l.mutex.Lock()
 	l.lastOutbound = time.Now()
 	l.lastData = time.Now()
+	l.mutex.Unlock()
 
 	packet := &LinkPacket{
 		Destination: l.destination,
@@ -232,7 +241,12 @@ func (l *Link) Send(data []byte) error {
 		l.rtt = l.InactiveFor()
 	}
 
-	return packet.send()
+	err := packet.send()
+	if err != nil {
+		return nil
+	}
+
+	return packet
 }
 
 type AnnounceHandler interface {
@@ -794,4 +808,60 @@ func (t *Transport) Start() error {
 	t.mutex.Lock()
 	defer t.mutex.Unlock()
 	return nil
+}
+
+// LinkInterface defines the methods required by Channel
+type LinkInterface interface {
+	GetStatus() int
+	GetRTT() float64
+	RTT() float64
+	Send(data []byte) interface{}
+	Resend(packet interface{}) error
+	SetPacketTimeout(packet interface{}, callback func(interface{}), timeout time.Duration)
+	SetPacketDelivered(packet interface{}, callback func(interface{}))
+}
+
+func (l *Link) GetRTT() float64 {
+	l.mutex.RLock()
+	defer l.mutex.RUnlock()
+	return l.rtt.Seconds()
+}
+
+func (l *Link) RTT() float64 {
+	return l.GetRTT()
+}
+
+func (l *Link) Resend(packet interface{}) error {
+	if p, ok := packet.(*LinkPacket); ok {
+		p.Timestamp = time.Now()
+		return p.send()
+	}
+	return errors.New("invalid packet type")
+}
+
+func (l *Link) SetPacketTimeout(packet interface{}, callback func(interface{}), timeout time.Duration) {
+	if p, ok := packet.(*LinkPacket); ok {
+		// Start timeout timer
+		time.AfterFunc(timeout, func() {
+			callback(p)
+		})
+	}
+}
+
+func (l *Link) SetPacketDelivered(packet interface{}, callback func(interface{})) {
+	if p, ok := packet.(*LinkPacket); ok {
+		// Update RTT
+		l.mutex.Lock()
+		l.rtt = time.Since(p.Timestamp)
+		l.mutex.Unlock()
+
+		// Call delivery callback
+		callback(p)
+	}
+}
+
+func (l *Link) GetStatus() int {
+	l.mutex.RLock()
+	defer l.mutex.RUnlock()
+	return l.status
 }
