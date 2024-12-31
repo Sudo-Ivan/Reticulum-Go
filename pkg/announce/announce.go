@@ -1,6 +1,7 @@
 package announce
 
 import (
+	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
@@ -13,7 +14,6 @@ import (
 )
 
 const (
-	// Packet Types
 	PACKET_TYPE_DATA     = 0x00
 	PACKET_TYPE_ANNOUNCE = 0x01
 	PACKET_TYPE_LINK     = 0x02
@@ -32,7 +32,6 @@ const (
 	PROP_TYPE_BROADCAST = 0x00
 	PROP_TYPE_TRANSPORT = 0x01
 
-	// Destination Types
 	DEST_TYPE_SINGLE = 0x00
 	DEST_TYPE_GROUP  = 0x01
 	DEST_TYPE_PLAIN  = 0x02
@@ -40,7 +39,7 @@ const (
 
 	// IFAC Flag
 	IFAC_NONE = 0x00
-	IFAC_AUTH = 0x80 // Most significant bit
+	IFAC_AUTH = 0x80
 
 	MAX_HOPS         = 128
 	PROPAGATION_RATE = 0.02 // 2% of interface bandwidth
@@ -65,9 +64,14 @@ type Announce struct {
 	pathResponse    bool
 	retries         int
 	handlers        []AnnounceHandler
+	ratchetID       []byte
 }
 
 func New(dest *identity.Identity, appData []byte, pathResponse bool) (*Announce, error) {
+	if dest == nil {
+		return nil, errors.New("destination identity required")
+	}
+
 	a := &Announce{
 		identity:     dest,
 		appData:      appData,
@@ -78,13 +82,17 @@ func New(dest *identity.Identity, appData []byte, pathResponse bool) (*Announce,
 		handlers:     make([]AnnounceHandler, 0),
 	}
 
-	// Generate destination hash
+	// Generate truncated hash
 	hash := sha256.New()
 	hash.Write(dest.GetPublicKey())
-	a.destinationHash = hash.Sum(nil)[:16] // Truncated hash
+	a.destinationHash = hash.Sum(nil)[:identity.TRUNCATED_HASHLENGTH/8]
 
-	// Sign the announce
+	// Sign announce data
 	signData := append(a.destinationHash, a.appData...)
+	if dest.GetRatchetID(nil) != nil {
+		a.ratchetID = dest.GetRatchetID(nil)
+		signData = append(signData, a.ratchetID...)
+	}
 	a.signature = dest.Sign(signData)
 
 	return a, nil
@@ -105,7 +113,7 @@ func (a *Announce) Propagate(interfaces []common.NetworkInterface) error {
 	// Propagate to interfaces
 	for _, iface := range interfaces {
 		log.Printf("Propagating on interface %s:", iface.GetName())
-		log.Printf("  Interface Type: %s", iface.GetType())
+		log.Printf("  Interface Type: %d", iface.GetType())
 		log.Printf("  MTU: %d bytes", iface.GetMTU())
 
 		if err := iface.Send(packet, ""); err != nil {
@@ -139,65 +147,49 @@ func (a *Announce) HandleAnnounce(data []byte) error {
 	a.mutex.Lock()
 	defer a.mutex.Unlock()
 
-	// Enhanced validation logging
-	log.Printf("Received announce data (%d bytes):", len(data))
-	log.Printf("  Raw Data: %x", data)
-
-	// Validate announce data
-	if len(data) < 16+32+1 { // Min size: hash + pubkey + hops
-		log.Printf("  Error: Invalid announce data length (got %d, need at least %d)", 
-			len(data), 16+32+1)
-		return errors.New("invalid announce data")
+	if len(data) < identity.TRUNCATED_HASHLENGTH/8+identity.KEYSIZE/8+1 {
+		return errors.New("invalid announce data length")
 	}
 
-	// Extract and log fields
-	destHash := data[:16]
-	publicKey := data[16:48]
-	hopCount := data[48]
-
-	log.Printf("  Destination Hash: %x", destHash)
-	log.Printf("  Public Key: %x", publicKey)
-	log.Printf("  Hop Count: %d", hopCount)
+	destHash := data[:identity.TRUNCATED_HASHLENGTH/8]
+	publicKey := data[identity.TRUNCATED_HASHLENGTH/8 : identity.TRUNCATED_HASHLENGTH/8+identity.KEYSIZE/8]
+	hopCount := data[identity.TRUNCATED_HASHLENGTH/8+identity.KEYSIZE/8]
 
 	if hopCount > MAX_HOPS {
-		log.Printf("  Error: Exceeded maximum hop count (%d > %d)", hopCount, MAX_HOPS)
 		return errors.New("announce exceeded maximum hop count")
 	}
 
 	// Extract app data and signature
-	appData := data[49 : len(data)-64]
-	signature := data[len(data)-64:]
+	dataStart := identity.TRUNCATED_HASHLENGTH/8 + identity.KEYSIZE/8 + 1
+	appData := data[dataStart : len(data)-ed25519.SignatureSize]
+	signature := data[len(data)-ed25519.SignatureSize:]
 
-	log.Printf("  App Data (%d bytes): %s", len(appData), string(appData))
-	log.Printf("  Signature: %x", signature)
-
-	// Create announced identity from public key
+	// Create announced identity
 	announcedIdentity := identity.FromPublicKey(publicKey)
 	if announcedIdentity == nil {
-		log.Printf("  Error: Invalid identity public key")
 		return errors.New("invalid identity public key")
 	}
 
-	// Verify signature
+	// Verify signature including ratchet if present
 	signData := append(destHash, appData...)
+	if len(appData) > 32 { // Check for ratchet
+		ratchetID := appData[len(appData)-32:]
+		signData = append(signData, ratchetID...)
+	}
+
 	if !announcedIdentity.Verify(signData, signature) {
-		log.Printf("  Error: Invalid announce signature")
 		return errors.New("invalid announce signature")
 	}
 
-	log.Printf("  Signature verification successful")
-
-	// Process announce with registered handlers
+	// Process with handlers
 	for _, handler := range a.handlers {
 		if handler.ReceivePathResponses() || !a.pathResponse {
 			if err := handler.ReceivedAnnounce(destHash, announcedIdentity, appData); err != nil {
-				log.Printf("  Handler error: %v", err)
 				return err
 			}
 		}
 	}
 
-	log.Printf("  Successfully processed announce")
 	return nil
 }
 
