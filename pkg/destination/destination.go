@@ -337,18 +337,15 @@ func (d *Destination) Decrypt(ciphertext []byte) ([]byte, error) {
 		return nil, errors.New("no identity available for decryption")
 	}
 
-	switch d.destType {
-	case SINGLE:
-		return d.identity.Decrypt(ciphertext)
-	case GROUP:
-		key := d.identity.GetCurrentRatchetKey()
-		if key == nil {
-			return nil, errors.New("no ratchet key available")
-		}
-		return d.identity.DecryptSymmetric(ciphertext, key)
-	default:
-		return nil, errors.New("unsupported destination type for decryption")
-	}
+	// Create empty ratchet receiver to get latest ratchet ID if available
+	ratchetReceiver := &common.RatchetIDReceiver{}
+	
+	// Call Decrypt with full parameter list:
+	// - ciphertext: the encrypted data
+	// - ratchets: nil since we're not providing specific ratchets
+	// - enforceRatchets: false to allow fallback to normal decryption
+	// - ratchetIDReceiver: to receive the latest ratchet ID used
+	return d.identity.Decrypt(ciphertext, nil, false, ratchetReceiver)
 }
 
 func (d *Destination) Sign(data []byte) ([]byte, error) {

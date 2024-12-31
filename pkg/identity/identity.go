@@ -19,19 +19,21 @@ import (
 
 	"golang.org/x/crypto/curve25519"
 	"golang.org/x/crypto/hkdf"
+	"github.com/Sudo-Ivan/reticulum-go/pkg/common"
 )
 
 const (
-	KeySize          = 512 // Combined size of encryption and signing keys
-	RatchetSize      = 256
-	RatchetExpiry    = 2592000 // 30 days in seconds
-	TruncatedHashLen = 128     // bits
-	NameHashLength   = 80      // bits
-	TokenOverhead    = 16      // bytes
-	AESBlockSize     = 16      // bytes
-	HashLength       = 256     // bits
-	SigLength        = KeySize // bits
-	HMACKeySize      = 32      // bytes
+	CURVE = "Curve25519"
+	KEYSIZE = 512 // 256*2 bits
+	RATCHETSIZE = 256 // bits
+	RATCHET_EXPIRY = 2592000 // 60*60*24*30 seconds (30 days)
+	TRUNCATED_HASHLENGTH = 128 // bits
+	NAME_HASH_LENGTH = 80 // bits
+	
+	TOKEN_OVERHEAD = 16 // AES block size in bytes
+	AES128_BLOCKSIZE = 16 // bytes
+	HASHLENGTH = 256 // bits 
+	SIGLENGTH = KEYSIZE // bits
 )
 
 type Identity struct {
@@ -39,10 +41,13 @@ type Identity struct {
 	publicKey       []byte
 	signingKey      ed25519.PrivateKey
 	verificationKey ed25519.PublicKey
+	hash            []byte
+	hexHash         string
+	appData         []byte
+	
 	ratchets        map[string][]byte
 	ratchetExpiry   map[string]int64
 	mutex           sync.RWMutex
-	appData         []byte
 }
 
 var (
@@ -181,9 +186,9 @@ func New() (*Identity, error) {
 }
 
 func (i *Identity) GetPublicKey() []byte {
-	combined := make([]byte, KeySize/8)
-	copy(combined[:KeySize/16], i.publicKey)
-	copy(combined[KeySize/16:], i.verificationKey)
+	combined := make([]byte, KEYSIZE/8)
+	copy(combined[:KEYSIZE/16], i.publicKey)
+	copy(combined[KEYSIZE/16:], i.verificationKey)
 	return combined
 }
 
@@ -200,68 +205,92 @@ func (i *Identity) Verify(data []byte, signature []byte) bool {
 }
 
 func (i *Identity) Encrypt(plaintext []byte, ratchet []byte) ([]byte, error) {
+	if i.publicKey == nil {
+		return nil, errors.New("encryption failed: identity does not hold a public key")
+	}
+
 	// Generate ephemeral key pair
-	ephemeralPrivate := make([]byte, curve25519.ScalarSize)
-	if _, err := io.ReadFull(rand.Reader, ephemeralPrivate); err != nil {
-		return nil, err
-	}
-
-	ephemeralPublic, err := curve25519.X25519(ephemeralPrivate, curve25519.Basepoint)
+	ephemeralKey, err := curve25519.X25519(make([]byte, 32), curve25519.Basepoint)
 	if err != nil {
 		return nil, err
 	}
+	ephemeralPubBytes := ephemeralKey
 
-	var targetKey []byte
+	var targetPublicKey []byte
 	if ratchet != nil {
-		targetKey = ratchet
+		targetPublicKey = ratchet
 	} else {
-		targetKey = i.publicKey
+		targetPublicKey = i.publicKey
 	}
 
-	sharedSecret, err := curve25519.X25519(ephemeralPrivate, targetKey)
+	// Generate shared key
+	sharedKey, err := curve25519.X25519(ephemeralKey, targetPublicKey)
 	if err != nil {
 		return nil, err
 	}
 
-	// Generate encryption key using HKDF
-	hkdf := hkdf.New(sha256.New, sharedSecret, i.Hash(), nil)
+	// Derive encryption key using HKDF
+	derivedKey := hkdf.New(sha256.New, sharedKey, i.hash, nil)
 	key := make([]byte, 32)
-	if _, err := io.ReadFull(hkdf, key); err != nil {
+	if _, err := io.ReadFull(derivedKey, key); err != nil {
 		return nil, err
 	}
 
-	// Encrypt using AES-GCM
-	ciphertext, err := encryptAESGCM(key, plaintext)
+	// Encrypt using AES-CBC
+	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, err
 	}
 
-	return append(ephemeralPublic, ciphertext...), nil
+	// Generate IV
+	iv := make([]byte, aes.BlockSize)
+	if _, err := io.ReadFull(rand.Reader, iv); err != nil {
+		return nil, err
+	}
+
+	// Pad plaintext
+	padding := aes.BlockSize - len(plaintext)%aes.BlockSize
+	padtext := make([]byte, len(plaintext)+padding)
+	copy(padtext, plaintext)
+	for i := len(plaintext); i < len(padtext); i++ {
+		padtext[i] = byte(padding)
+	}
+
+	// Encrypt
+	mode := cipher.NewCBCEncrypter(block, iv)
+	ciphertext := make([]byte, len(padtext))
+	mode.CryptBlocks(ciphertext, padtext)
+
+	// Combine ephemeral public key + IV + ciphertext
+	token := append(ephemeralPubBytes, iv...)
+	token = append(token, ciphertext...)
+
+	return token, nil
 }
 
 func (i *Identity) Hash() []byte {
 	h := sha256.New()
 	h.Write(i.GetPublicKey())
 	fullHash := h.Sum(nil)
-	return fullHash[:TruncatedHashLen/8]
+	return fullHash[:TRUNCATED_HASHLENGTH/8]
 }
 
 func TruncatedHash(data []byte) []byte {
 	h := sha256.New()
 	h.Write(data)
 	fullHash := h.Sum(nil)
-	return fullHash[:TruncatedHashLen/8]
+	return fullHash[:TRUNCATED_HASHLENGTH/8]
 }
 
 func GetRandomHash() []byte {
-	randomData := make([]byte, TruncatedHashLen/8)
+	randomData := make([]byte, TRUNCATED_HASHLENGTH/8)
 	rand.Read(randomData)
 	return TruncatedHash(randomData)
 }
 
 func Remember(packetHash, destHash []byte, publicKey []byte, appData []byte) {
-	if len(destHash) > TruncatedHashLen/8 {
-		destHash = destHash[:TruncatedHashLen/8]
+	if len(destHash) > TRUNCATED_HASHLENGTH/8 {
+		destHash = destHash[:TRUNCATED_HASHLENGTH/8]
 	}
 
 	knownDestinations[string(destHash)] = []interface{}{
@@ -273,17 +302,17 @@ func Remember(packetHash, destHash []byte, publicKey []byte, appData []byte) {
 }
 
 func ValidateAnnounce(packet []byte, destHash []byte, publicKey []byte, signature []byte, appData []byte) bool {
-	if len(publicKey) != KeySize/8 {
+	if len(publicKey) != KEYSIZE/8 {
 		return false
 	}
 
-	if len(destHash) > TruncatedHashLen/8 {
-		destHash = destHash[:TruncatedHashLen/8]
+	if len(destHash) > TRUNCATED_HASHLENGTH/8 {
+		destHash = destHash[:TRUNCATED_HASHLENGTH/8]
 	}
 
 	announced := &Identity{}
-	announced.publicKey = publicKey[:KeySize/16]
-	announced.verificationKey = publicKey[KeySize/16:]
+	announced.publicKey = publicKey[:KEYSIZE/16]
+	announced.verificationKey = publicKey[KEYSIZE/16:]
 
 	signedData := append(destHash, publicKey...)
 	signedData = append(signedData, appData...)
@@ -297,13 +326,13 @@ func ValidateAnnounce(packet []byte, destHash []byte, publicKey []byte, signatur
 }
 
 func FromPublicKey(publicKey []byte) *Identity {
-	if len(publicKey) != KeySize/8 {
+	if len(publicKey) != KEYSIZE/8 {
 		return nil
 	}
 
 	i := &Identity{
-		publicKey:       publicKey[:KeySize/16],
-		verificationKey: publicKey[KeySize/16:],
+		publicKey:       publicKey[:KEYSIZE/16],
+		verificationKey: publicKey[KEYSIZE/16:],
 		ratchets:        make(map[string][]byte),
 		ratchetExpiry:   make(map[string]int64),
 	}
@@ -326,7 +355,7 @@ func Recall(hash []byte) (*Identity, error) {
 }
 
 func (i *Identity) GenerateHMACKey() []byte {
-	hmacKey := make([]byte, HMACKeySize)
+	hmacKey := make([]byte, KEYSIZE/8)
 	if _, err := io.ReadFull(rand.Reader, hmacKey); err != nil {
 		return nil
 	}
@@ -350,12 +379,12 @@ func (i *Identity) GetCurrentRatchetKey() []byte {
 
 	// Generate new ratchet key if none exists
 	if len(i.ratchets) == 0 {
-		key := make([]byte, RatchetSize/8)
+		key := make([]byte, RATCHETSIZE/8)
 		if _, err := io.ReadFull(rand.Reader, key); err != nil {
 			return nil
 		}
 		i.ratchets[string(key)] = key
-		i.ratchetExpiry[string(key)] = time.Now().Unix() + RatchetExpiry
+		i.ratchetExpiry[string(key)] = time.Now().Unix() + RATCHET_EXPIRY
 		return key
 	}
 
@@ -385,29 +414,153 @@ func (i *Identity) DecryptSymmetric(ciphertext []byte, key []byte) ([]byte, erro
 	return decryptAESGCM(key, ciphertext)
 }
 
-func (i *Identity) Decrypt(ciphertext []byte) ([]byte, error) {
-	if len(ciphertext) < curve25519.PointSize {
-		return nil, errors.New("ciphertext too short")
+func (i *Identity) Decrypt(ciphertextToken []byte, ratchets [][]byte, enforceRatchets bool, ratchetIDReceiver *common.RatchetIDReceiver) ([]byte, error) {
+	if i.privateKey == nil {
+		return nil, errors.New("decryption failed because identity does not hold a private key")
 	}
 
-	ephemeralPublic := ciphertext[:curve25519.PointSize]
-	encryptedData := ciphertext[curve25519.PointSize:]
+	if len(ciphertextToken) <= KEYSIZE/8/2 {
+		return nil, errors.New("decryption failed because the token size was invalid")
+	}
 
-	// Compute shared secret
-	sharedSecret, err := curve25519.X25519(i.privateKey, ephemeralPublic)
+	// Extract peer public key and ciphertext
+	peerPubBytes := ciphertextToken[:KEYSIZE/8/2]
+	ciphertext := ciphertextToken[KEYSIZE/8/2:]
+
+	// Try decryption with ratchets first if provided
+	if len(ratchets) > 0 {
+		for _, ratchet := range ratchets {
+			if decrypted, ratchetID, err := i.tryRatchetDecryption(peerPubBytes, ciphertext, ratchet); err == nil {
+				if ratchetIDReceiver != nil {
+					ratchetIDReceiver.LatestRatchetID = ratchetID
+				}
+				return decrypted, nil
+			}
+		}
+
+		if enforceRatchets {
+			if ratchetIDReceiver != nil {
+				ratchetIDReceiver.LatestRatchetID = nil
+			}
+			return nil, errors.New("decryption with ratchet enforcement failed")
+		}
+	}
+
+	// Try normal decryption if ratchet decryption failed or wasn't requested
+	sharedKey, err := curve25519.X25519(i.privateKey, peerPubBytes)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to generate shared key: %v", err)
 	}
 
 	// Derive key using HKDF
-	hkdf := hkdf.New(sha256.New, sharedSecret, i.Hash(), nil)
-	key := make([]byte, 32)
-	if _, err := io.ReadFull(hkdf, key); err != nil {
-		return nil, err
+	hkdfReader := hkdf.New(sha256.New, sharedKey, i.GetSalt(), i.GetContext())
+	derivedKey := make([]byte, 32)
+	if _, err := io.ReadFull(hkdfReader, derivedKey); err != nil {
+		return nil, fmt.Errorf("failed to derive key: %v", err)
 	}
 
-	// Decrypt data
-	return decryptAESGCM(key, encryptedData)
+	// Create AES cipher
+	block, err := aes.NewCipher(derivedKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create cipher: %v", err)
+	}
+
+	// Extract IV and decrypt
+	if len(ciphertext) < aes.BlockSize {
+		return nil, errors.New("ciphertext too short")
+	}
+
+	iv := ciphertext[:aes.BlockSize]
+	actualCiphertext := ciphertext[aes.BlockSize:]
+
+	if len(actualCiphertext)%aes.BlockSize != 0 {
+		return nil, errors.New("ciphertext is not a multiple of block size")
+	}
+
+	mode := cipher.NewCBCDecrypter(block, iv)
+	plaintext := make([]byte, len(actualCiphertext))
+	mode.CryptBlocks(plaintext, actualCiphertext)
+
+	// Remove PKCS7 padding
+	padding := int(plaintext[len(plaintext)-1])
+	if padding > aes.BlockSize || padding == 0 {
+		return nil, errors.New("invalid padding")
+	}
+
+	for i := len(plaintext) - padding; i < len(plaintext); i++ {
+		if plaintext[i] != byte(padding) {
+			return nil, errors.New("invalid padding")
+		}
+	}
+
+	if ratchetIDReceiver != nil {
+		ratchetIDReceiver.LatestRatchetID = nil
+	}
+
+	return plaintext[:len(plaintext)-padding], nil
+}
+
+// Helper function to attempt decryption using a ratchet
+func (i *Identity) tryRatchetDecryption(peerPubBytes, ciphertext, ratchet []byte) ([]byte, []byte, error) {
+	// Convert ratchet to private key
+	ratchetPriv := ratchet
+
+	// Get ratchet ID
+	ratchetPubBytes, err := curve25519.X25519(ratchetPriv, curve25519.Basepoint)
+	if err != nil {
+		return nil, nil, err
+	}
+	ratchetID := i.GetRatchetID(ratchetPubBytes)
+	
+	// Generate shared key
+	sharedKey, err := curve25519.X25519(ratchetPriv, peerPubBytes)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Derive key using HKDF
+	hkdfReader := hkdf.New(sha256.New, sharedKey, i.GetSalt(), i.GetContext())
+	derivedKey := make([]byte, 32)
+	if _, err := io.ReadFull(hkdfReader, derivedKey); err != nil {
+		return nil, nil, err
+	}
+
+	// Create AES cipher
+	block, err := aes.NewCipher(derivedKey)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Extract IV and decrypt
+	if len(ciphertext) < aes.BlockSize {
+		return nil, nil, errors.New("ciphertext too short")
+	}
+
+	iv := ciphertext[:aes.BlockSize]
+	actualCiphertext := ciphertext[aes.BlockSize:]
+
+	if len(actualCiphertext)%aes.BlockSize != 0 {
+		return nil, nil, errors.New("ciphertext is not a multiple of block size")
+	}
+
+	// Decrypt
+	mode := cipher.NewCBCDecrypter(block, iv)
+	plaintext := make([]byte, len(actualCiphertext))
+	mode.CryptBlocks(plaintext, actualCiphertext)
+
+	// Remove padding
+	padding := int(plaintext[len(plaintext)-1])
+	if padding > aes.BlockSize || padding == 0 {
+		return nil, nil, errors.New("invalid padding")
+	}
+
+	for i := len(plaintext) - padding; i < len(plaintext); i++ {
+		if plaintext[i] != byte(padding) {
+			return nil, nil, errors.New("invalid padding")
+		}
+	}
+
+	return plaintext[:len(plaintext)-padding], ratchetID, nil
 }
 
 func (i *Identity) EncryptWithHMAC(plaintext []byte, key []byte) ([]byte, error) {
@@ -498,4 +651,17 @@ func HashFromString(hash string) ([]byte, error) {
 	}
 
 	return hex.DecodeString(hash)
+}
+
+func (i *Identity) GetSalt() []byte {
+	return i.hash
+}
+
+func (i *Identity) GetContext() []byte {
+	return nil
+}
+
+func (i *Identity) GetRatchetID(ratchetPubBytes []byte) []byte {
+	hash := sha256.Sum256(ratchetPubBytes)
+	return hash[:NAME_HASH_LENGTH/8]
 }

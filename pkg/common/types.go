@@ -33,3 +33,7 @@ type InterfaceType byte
 
 // PacketCallback defines the function signature for packet handling
 type PacketCallback func([]byte, interface{})
+
+type RatchetIDReceiver struct {
+    LatestRatchetID []byte
+}
