@@ -184,6 +184,7 @@ func (tc *TCPClientInterface) readLoop() {
 
 func (tc *TCPClientInterface) handlePacket(data []byte) {
 	if len(data) < 1 {
+		log.Printf("[DEBUG-7] Received invalid packet: empty")
 		return
 	}
 
@@ -194,19 +195,22 @@ func (tc *TCPClientInterface) handlePacket(data []byte) {
 	tc.lastRx = lastRx
 	tc.mutex.Unlock()
 
-	log.Printf("[DEBUG-5] Interface %s RX: %d bytes, total: %d, rate: %.2f Kbps",
-		tc.GetName(), len(data), tc.RxBytes,
-		float64(tc.RxBytes*8)/(time.Since(tc.startTime).Seconds()*1000))
+	log.Printf("[DEBUG-7] Received packet: type=0x%02x, size=%d bytes", tc.packetType, len(data))
 
 	payload := data[1:]
 
 	switch tc.packetType {
 	case 0x01: // Announce packet
-		if len(payload) >= 53 { // Minimum announce size
+		log.Printf("[DEBUG-7] Processing announce packet: payload=%d bytes", len(payload))
+		if len(payload) >= 53 {
 			tc.BaseInterface.ProcessIncoming(payload)
+		} else {
+			log.Printf("[DEBUG-7] Announce packet too small: %d bytes", len(payload))
 		}
 	case 0x02: // Link packet
-		if len(payload) < 40 { // minimum size for link packet
+		log.Printf("[DEBUG-7] Processing link packet: payload=%d bytes", len(payload))
+		if len(payload) < 40 {
+			log.Printf("[DEBUG-7] Link packet too small: %d bytes", len(payload))
 			return
 		}
 		tc.BaseInterface.ProcessIncoming(payload)

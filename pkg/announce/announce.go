@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"log"
 	"sync"
 	"time"
 
@@ -153,22 +154,31 @@ func (a *Announce) HandleAnnounce(data []byte) error {
 	a.mutex.Lock()
 	defer a.mutex.Unlock()
 
+	log.Printf("[DEBUG-7] Handling announce packet of %d bytes", len(data))
+
 	// Minimum packet size validation (2 header + 16 hash + 32 pubkey + 1 hops + 2 appdata len + 64 sig)
 	if len(data) < 117 {
+		log.Printf("[DEBUG-7] Invalid announce data length: %d bytes", len(data))
 		return errors.New("invalid announce data length")
 	}
 
 	// Parse header
 	header := data[:2]
 	hopCount := header[1]
+	log.Printf("[DEBUG-7] Announce header: type=%x, hops=%d", header[0], hopCount)
+
 	if hopCount > MAX_HOPS {
+		log.Printf("[DEBUG-7] Announce exceeded max hops: %d", hopCount)
 		return errors.New("announce exceeded maximum hop count")
 	}
 
-	// Extract fields
+	// Extract fields with detailed logging
 	destHash := data[2:18]
 	publicKey := data[18:50]
 	hopsByte := data[50]
+
+	log.Printf("[DEBUG-7] Announce fields: destHash=%x, pubKeyLen=%d, hops=%d",
+		destHash, len(publicKey), hopsByte)
 
 	// Validate hop count matches header
 	if hopsByte != hopCount {
@@ -409,4 +419,44 @@ func (a *Announce) Hash() []byte {
 		a.hash = h.Sum(nil)
 	}
 	return a.hash
+}
+
+func (a *Announce) GetPacket() []byte {
+	a.mutex.Lock()
+	defer a.mutex.Unlock()
+
+	if a.packet == nil {
+		// Generate hash from announce data
+		h := sha256.New()
+		h.Write(a.destinationHash)
+		h.Write(a.identity.GetPublicKey())
+		h.Write([]byte{a.hops})
+		h.Write(a.appData)
+		if a.ratchetID != nil {
+			h.Write(a.ratchetID)
+		}
+
+		// Construct packet
+		packet := make([]byte, 0)
+		packet = append(packet, PACKET_TYPE_ANNOUNCE)
+		packet = append(packet, a.destinationHash...)
+		packet = append(packet, a.identity.GetPublicKey()...)
+		packet = append(packet, a.hops)
+		packet = append(packet, a.appData...)
+		if a.ratchetID != nil {
+			packet = append(packet, a.ratchetID...)
+		}
+
+		// Add signature
+		signData := append(a.destinationHash, a.appData...)
+		if a.ratchetID != nil {
+			signData = append(signData, a.ratchetID...)
+		}
+		signature := a.identity.Sign(signData)
+		packet = append(packet, signature...)
+
+		a.packet = packet
+	}
+
+	return a.packet
 }
