@@ -287,26 +287,25 @@ func Remember(packet []byte, destHash []byte, publicKey []byte, appData []byte) 
 
 func ValidateAnnounce(packet []byte, destHash []byte, publicKey []byte, signature []byte, appData []byte) bool {
 	if len(publicKey) != KEYSIZE/8 {
-		log.Printf("[DEBUG-7] Invalid public key length: %d", len(publicKey))
 		return false
 	}
 
-	log.Printf("[DEBUG-7] Validating announce for destination hash: %x", destHash)
+	// Split public key into encryption and verification keys
+	announced := &Identity{
+		publicKey:       publicKey[:KEYSIZE/16],
+		verificationKey: publicKey[KEYSIZE/16:],
+	}
 
-	announced := &Identity{}
-	announced.publicKey = publicKey[:KEYSIZE/16]
-	announced.verificationKey = publicKey[KEYSIZE/16:]
-
+	// Verify signature
 	signedData := append(destHash, publicKey...)
 	signedData = append(signedData, appData...)
 
 	if !announced.Verify(signedData, signature) {
-		log.Printf("[DEBUG-7] Signature verification failed")
 		return false
 	}
 
+	// Store in known destinations
 	Remember(packet, destHash, publicKey, appData)
-	log.Printf("[DEBUG-7] Announce validated and remembered successfully")
 	return true
 }
 
@@ -315,14 +314,13 @@ func FromPublicKey(publicKey []byte) *Identity {
 		return nil
 	}
 
-	i := &Identity{
+	return &Identity{
 		publicKey:       publicKey[:KEYSIZE/16],
 		verificationKey: publicKey[KEYSIZE/16:],
 		ratchets:        make(map[string][]byte),
 		ratchetExpiry:   make(map[string]int64),
+		mutex:           &sync.RWMutex{},
 	}
-
-	return i
 }
 
 func (i *Identity) Hex() string {
@@ -830,4 +828,17 @@ func (i *Identity) CleanupExpiredRatchets() {
 	}
 
 	log.Printf("[DEBUG-7] Cleaned up %d expired ratchets, %d remaining", cleaned, len(i.ratchets))
+}
+
+// ValidateAnnounce validates an announce packet's signature
+func (i *Identity) ValidateAnnounce(data []byte, destHash []byte, appData []byte) bool {
+	if i == nil || len(data) < ed25519.SignatureSize {
+		return false
+	}
+
+	signatureStart := len(data) - ed25519.SignatureSize
+	signature := data[signatureStart:]
+	signedData := append(destHash, appData...)
+
+	return ed25519.Verify(i.verificationKey, signedData, signature)
 }

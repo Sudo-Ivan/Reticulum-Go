@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/Sudo-Ivan/reticulum-go/pkg/identity"
 )
 
 const (
@@ -205,4 +207,30 @@ func (p *Packet) Serialize() ([]byte, error) {
 	p.Addresses = p.DestinationHash
 
 	return p.Raw, nil
+}
+
+func NewAnnouncePacket(destHash []byte, identity *identity.Identity, appData []byte, transportID []byte) (*Packet, error) {
+	// Create combined public key
+	pubKey := identity.GetPublicKey()
+
+	// Create signed data
+	signedData := append(destHash, pubKey...)
+	signedData = append(signedData, appData...)
+
+	// Sign the data
+	signature := identity.Sign(signedData)
+
+	// Combine all data
+	data := append(pubKey, appData...)
+	data = append(data, signature...)
+
+	p := &Packet{
+		HeaderType:      HeaderType2,
+		PacketType:      PacketTypeAnnounce,
+		TransportID:     transportID,
+		DestinationHash: destHash,
+		Data:            data,
+	}
+
+	return p, nil
 }

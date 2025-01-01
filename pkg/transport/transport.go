@@ -13,6 +13,7 @@ import (
 
 	"github.com/Sudo-Ivan/reticulum-go/pkg/announce"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/common"
+	"github.com/Sudo-Ivan/reticulum-go/pkg/identity"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/interfaces"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/packet"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/pathfinder"
@@ -616,37 +617,42 @@ func (t *Transport) HandlePacket(data []byte, iface common.NetworkInterface) {
 	}
 }
 
-func (t *Transport) handleAnnouncePacket(data []byte, iface common.NetworkInterface) {
-	// Validate minimum packet size (1 byte hop count + 32 bytes dest + 16 bytes identity + 4 bytes min app data)
-	if len(data) < 53 {
-		log.Printf("[DEBUG-3] Announce packet too small: %d bytes", len(data))
-		return
+func (t *Transport) handleAnnouncePacket(data []byte, iface common.NetworkInterface) error {
+	// Validate minimum packet size (1 byte hop count + 32 bytes dest hash + 16 bytes min identity + 1 byte min app data)
+	if len(data) < 50 {
+		return fmt.Errorf("announce packet too small: %d bytes", len(data))
 	}
 
-	announceHash := sha256.Sum256(data)
-	log.Printf("[DEBUG-3] Processing announce %x from interface %s",
-		announceHash[:8], iface.GetName())
-
-	t.mutex.Lock()
-	if _, seen := t.seenAnnounces[string(announceHash[:])]; seen {
-		t.mutex.Unlock()
-		log.Printf("[DEBUG-4] Ignoring duplicate announce %x", announceHash[:8])
-		return
-	}
-	t.seenAnnounces[string(announceHash[:])] = true
-	t.mutex.Unlock()
-
-	// Don't forward if max hops reached
-	if data[0] >= MAX_HOPS {
-		log.Printf("[DEBUG-3] Announce exceeded max hops: %d", data[0])
-		return
-	}
-
-	// Parse announce fields
+	// Extract fields
 	hopCount := data[0]
 	destHash := data[1:33]
-	identity := data[33:49]
+	identityBytes := data[33:49]
 	appData := data[49:]
+
+	// Check for duplicate announces
+	announceHash := sha256.Sum256(data)
+	hashStr := string(announceHash[:])
+
+	t.mutex.Lock()
+	if _, seen := t.seenAnnounces[hashStr]; seen {
+		t.mutex.Unlock()
+		log.Printf("[DEBUG-7] Ignoring duplicate announce %x", announceHash[:8])
+		return nil
+	}
+	t.seenAnnounces[hashStr] = true
+	t.mutex.Unlock()
+
+	// Validate announce signature and store destination
+	id := identity.FromPublicKey(identityBytes)
+	if id == nil || !id.ValidateAnnounce(data, destHash, appData) {
+		return fmt.Errorf("invalid announce signature")
+	}
+
+	// Don't forward if max hops reached
+	if hopCount >= MAX_HOPS {
+		log.Printf("[DEBUG-7] Announce exceeded max hops: %d", hopCount)
+		return nil
+	}
 
 	// Add random delay before retransmission (0-2 seconds)
 	delay := time.Duration(rand.Float64() * 2 * float64(time.Second))
@@ -654,27 +660,39 @@ func (t *Transport) handleAnnouncePacket(data []byte, iface common.NetworkInterf
 
 	// Check bandwidth allocation for announces
 	if !t.announceRate.Allow() {
-		log.Printf("[DEBUG-3] Announce rate limit exceeded, dropping")
-		return
+		log.Printf("[DEBUG-7] Announce rate limit exceeded, dropping")
+		return nil
 	}
 
 	// Increment hop count for forwarding
-	data[0] = hopCount + 1
+	forwardData := make([]byte, len(data))
+	copy(forwardData, data)
+	forwardData[0] = hopCount + 1
 
 	// Forward to other interfaces
+	var lastErr error
 	for name, outIface := range t.interfaces {
 		if outIface == iface || !outIface.IsEnabled() {
 			continue
 		}
 
+		//     Check interface mode restrictions
+		//		if outIface.GetMode() == interfaces.ModeAccessPoint {
+		//			log.Printf("[DEBUG-7] Blocking announce broadcast on %s due to AP mode", name)
+		//			continue
+		//		}
+
 		log.Printf("[DEBUG-7] Forwarding announce on interface %s", name)
-		if err := outIface.Send(data, ""); err != nil {
+		if err := outIface.Send(forwardData, ""); err != nil {
 			log.Printf("[DEBUG-3] Failed to forward announce on %s: %v", name, err)
+			lastErr = err
 		}
 	}
 
 	// Notify announce handlers
-	t.notifyAnnounceHandlers(destHash, identity, appData)
+	t.notifyAnnounceHandlers(destHash, identityBytes, appData)
+
+	return lastErr
 }
 
 func (t *Transport) handleLinkPacket(data []byte, iface common.NetworkInterface) {

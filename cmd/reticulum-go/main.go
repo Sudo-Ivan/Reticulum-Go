@@ -56,6 +56,7 @@ type Reticulum struct {
 	pathRequests      map[string]*common.PathRequest
 	announceHistory   map[string]announceRecord
 	announceHistoryMu sync.RWMutex
+	identity          *identity.Identity
 }
 
 type announceRecord struct {
@@ -78,6 +79,12 @@ func NewReticulum(cfg *common.ReticulumConfig) (*Reticulum, error) {
 	t := transport.NewTransport(cfg)
 	debugLog(3, "Transport initialized")
 
+	identity, err := identity.NewIdentity()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create identity: %v", err)
+	}
+	debugLog(2, "Created new identity: %x", identity.Hash())
+
 	r := &Reticulum{
 		config:           cfg,
 		transport:        t,
@@ -87,6 +94,7 @@ func NewReticulum(cfg *common.ReticulumConfig) (*Reticulum, error) {
 		announceHandlers: make(map[string][]announce.AnnounceHandler),
 		pathRequests:     make(map[string]*common.PathRequest),
 		announceHistory:  make(map[string]announceRecord),
+		identity:         identity,
 	}
 
 	// Initialize interfaces from config
@@ -240,20 +248,12 @@ func main() {
 		log.Fatalf("Failed to create Reticulum instance: %v", err)
 	}
 
-	// Create identity and destination
-	identity, err := identity.NewIdentity()
-	if err != nil {
-		log.Fatalf("Failed to create identity: %v", err)
-	}
-
-	debugLog(2, "Created new identity: %x", identity.Hash())
-
-	// Create announce
+	// Create announce using r.identity
 	announce, err := announce.NewAnnounce(
-		identity,
-		[]byte("nomadnetwork.node"),
-		nil,   // No ratchet ID
-		false, // Not a path response
+		r.identity,
+		[]byte("HELLO WORLD"),
+		nil,
+		false,
 	)
 	if err != nil {
 		log.Fatalf("Failed to create announce: %v", err)
@@ -386,19 +386,12 @@ func initializeDirectories() error {
 func (r *Reticulum) Start() error {
 	debugLog(2, "Starting Reticulum...")
 
-	// Create identity for announces
-	identity, err := identity.NewIdentity()
-	if err != nil {
-		return fmt.Errorf("failed to create identity: %v", err)
-	}
-	debugLog(2, "Created new identity: %x", identity.Hash())
-
-	// Create announce
+	// Create announce using r.identity
 	announce, err := announce.NewAnnounce(
-		identity,
+		r.identity,
 		[]byte("Reticulum-Go"),
-		nil,   // No ratchet ID
-		false, // Not a path response
+		nil,
+		false,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to create announce: %v", err)
