@@ -2,6 +2,7 @@ package interfaces
 
 import (
 	"fmt"
+	"log"
 	"net"
 	"sync"
 	"syscall"
@@ -47,6 +48,11 @@ type TCPClientInterface struct {
 	packetType        byte
 	mutex             sync.RWMutex
 	enabled           bool
+	TxBytes           uint64
+	RxBytes           uint64
+	startTime         time.Time
+	lastTx            time.Time
+	lastRx            time.Time
 }
 
 func NewTCPClientInterface(name string, targetHost string, targetPort int, kissFraming bool, i2pTunneled bool, enabled bool) (*TCPClientInterface, error) {
@@ -120,6 +126,11 @@ func (tc *TCPClientInterface) readLoop() {
 			return
 		}
 
+		// Update RX bytes
+		tc.mutex.Lock()
+		tc.RxBytes += uint64(n)
+		tc.mutex.Unlock()
+
 		for i := 0; i < n; i++ {
 			b := buffer[i]
 
@@ -178,7 +189,14 @@ func (tc *TCPClientInterface) handlePacket(data []byte) {
 
 	tc.mutex.Lock()
 	tc.packetType = data[0]
+	tc.RxBytes += uint64(len(data))
+	lastRx := time.Now()
+	tc.lastRx = lastRx
 	tc.mutex.Unlock()
+
+	log.Printf("[DEBUG-5] Interface %s RX: %d bytes, total: %d, rate: %.2f Kbps",
+		tc.GetName(), len(data), tc.RxBytes,
+		float64(tc.RxBytes*8)/(time.Since(tc.startTime).Seconds()*1000))
 
 	payload := data[1:]
 
@@ -219,13 +237,18 @@ func (tc *TCPClientInterface) ProcessOutgoing(data []byte) error {
 		frame = append(frame, HDLC_FLAG)
 	}
 
-	if _, err := tc.conn.Write(frame); err != nil {
-		tc.teardown()
-		return fmt.Errorf("write failed: %v", err)
-	}
+	tc.mutex.Lock()
+	tc.TxBytes += uint64(len(frame))
+	lastTx := time.Now()
+	tc.lastTx = lastTx
+	tc.mutex.Unlock()
 
-	tc.BaseInterface.ProcessOutgoing(data)
-	return nil
+	log.Printf("[DEBUG-5] Interface %s TX: %d bytes, total: %d, rate: %.2f Kbps",
+		tc.GetName(), len(frame), tc.TxBytes,
+		float64(tc.TxBytes*8)/(time.Since(tc.startTime).Seconds()*1000))
+
+	_, err := tc.conn.Write(frame)
+	return err
 }
 
 func (tc *TCPClientInterface) teardown() {
@@ -415,6 +438,42 @@ func (tc *TCPClientInterface) GetRTT() time.Duration {
 	return 0
 }
 
+func (tc *TCPClientInterface) GetTxBytes() uint64 {
+	tc.mutex.RLock()
+	defer tc.mutex.RUnlock()
+	return tc.TxBytes
+}
+
+func (tc *TCPClientInterface) GetRxBytes() uint64 {
+	tc.mutex.RLock()
+	defer tc.mutex.RUnlock()
+	return tc.RxBytes
+}
+
+func (tc *TCPClientInterface) UpdateStats(bytes uint64, isRx bool) {
+	tc.mutex.Lock()
+	defer tc.mutex.Unlock()
+
+	now := time.Now()
+	if isRx {
+		tc.RxBytes += bytes
+		tc.lastRx = now
+		log.Printf("[DEBUG-5] Interface %s RX stats: bytes=%d total=%d last=%v",
+			tc.Name, bytes, tc.RxBytes, tc.lastRx)
+	} else {
+		tc.TxBytes += bytes
+		tc.lastTx = now
+		log.Printf("[DEBUG-5] Interface %s TX stats: bytes=%d total=%d last=%v",
+			tc.Name, bytes, tc.TxBytes, tc.lastTx)
+	}
+}
+
+func (tc *TCPClientInterface) GetStats() (tx uint64, rx uint64, lastTx time.Time, lastRx time.Time) {
+	tc.mutex.RLock()
+	defer tc.mutex.RUnlock()
+	return tc.TxBytes, tc.RxBytes, tc.lastTx, tc.lastRx
+}
+
 type TCPServerInterface struct {
 	BaseInterface
 	connections    map[string]net.Conn
@@ -425,6 +484,8 @@ type TCPServerInterface struct {
 	kissFraming    bool
 	i2pTunneled    bool
 	packetCallback common.PacketCallback
+	TxBytes        uint64
+	RxBytes        uint64
 }
 
 func NewTCPServerInterface(name string, bindAddr string, bindPort int, kissFraming bool, i2pTunneled bool, preferIPv6 bool) (*TCPServerInterface, error) {
@@ -520,4 +581,16 @@ func (ts *TCPServerInterface) Stop() error {
 
 	ts.Online = false
 	return nil
+}
+
+func (ts *TCPServerInterface) GetTxBytes() uint64 {
+	ts.mutex.RLock()
+	defer ts.mutex.RUnlock()
+	return ts.TxBytes
+}
+
+func (ts *TCPServerInterface) GetRxBytes() uint64 {
+	ts.mutex.RLock()
+	defer ts.mutex.RUnlock()
+	return ts.RxBytes
 }
