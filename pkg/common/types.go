@@ -15,6 +15,7 @@ type Path struct {
 	NextHop     []byte
 	Hops        uint8
 	LastUpdated time.Time
+	HopCount    uint8
 }
 
 // Common callbacks

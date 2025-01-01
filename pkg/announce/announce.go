@@ -54,7 +54,7 @@ type AnnounceHandler interface {
 }
 
 type Announce struct {
-	mutex           sync.RWMutex
+	mutex           *sync.RWMutex
 	destinationHash []byte
 	identity        *identity.Identity
 	appData         []byte
@@ -65,6 +65,7 @@ type Announce struct {
 	retries         int
 	handlers        []AnnounceHandler
 	ratchetID       []byte
+	packet          []byte
 }
 
 func New(dest *identity.Identity, appData []byte, pathResponse bool) (*Announce, error) {
@@ -73,24 +74,30 @@ func New(dest *identity.Identity, appData []byte, pathResponse bool) (*Announce,
 	}
 
 	a := &Announce{
-		identity:     dest,
-		appData:      appData,
-		hops:         0,
-		timestamp:    time.Now().Unix(),
-		pathResponse: pathResponse,
-		retries:      0,
-		handlers:     make([]AnnounceHandler, 0),
+		mutex:          &sync.RWMutex{},
+		identity:       dest,
+		appData:        appData,
+		hops:           0,
+		timestamp:     time.Now().Unix(),
+		pathResponse:  pathResponse,
+		retries:       0,
+		handlers:      make([]AnnounceHandler, 0),
 	}
 
-	// Generate truncated hash
-	hash := sha256.New()
-	hash.Write(dest.GetPublicKey())
-	a.destinationHash = hash.Sum(nil)[:identity.TRUNCATED_HASHLENGTH/8]
+	// Generate truncated hash from public key
+	pubKey := dest.GetPublicKey()
+	hash := sha256.Sum256(pubKey)
+	a.destinationHash = hash[:identity.TRUNCATED_HASHLENGTH/8]
+
+	// Get current ratchet ID if enabled
+	currentRatchet := dest.GetCurrentRatchetKey()
+	if currentRatchet != nil {
+		a.ratchetID = dest.GetRatchetID(currentRatchet)
+	}
 
 	// Sign announce data
 	signData := append(a.destinationHash, a.appData...)
-	if dest.GetRatchetID(nil) != nil {
-		a.ratchetID = dest.GetRatchetID(nil)
+	if a.ratchetID != nil {
 		signData = append(signData, a.ratchetID...)
 	}
 	a.signature = dest.Sign(signData)
@@ -147,22 +154,53 @@ func (a *Announce) HandleAnnounce(data []byte) error {
 	a.mutex.Lock()
 	defer a.mutex.Unlock()
 
-	if len(data) < identity.TRUNCATED_HASHLENGTH/8+identity.KEYSIZE/8+1 {
+	// Minimum packet size validation (2 header + 16 hash + 32 pubkey + 1 hops + 2 appdata len + 64 sig)
+	if len(data) < 117 {
 		return errors.New("invalid announce data length")
 	}
 
-	destHash := data[:identity.TRUNCATED_HASHLENGTH/8]
-	publicKey := data[identity.TRUNCATED_HASHLENGTH/8 : identity.TRUNCATED_HASHLENGTH/8+identity.KEYSIZE/8]
-	hopCount := data[identity.TRUNCATED_HASHLENGTH/8+identity.KEYSIZE/8]
-
+	// Parse header
+	header := data[:2]
+	hopCount := header[1]
 	if hopCount > MAX_HOPS {
 		return errors.New("announce exceeded maximum hop count")
 	}
 
-	// Extract app data and signature
-	dataStart := identity.TRUNCATED_HASHLENGTH/8 + identity.KEYSIZE/8 + 1
-	appData := data[dataStart : len(data)-ed25519.SignatureSize]
-	signature := data[len(data)-ed25519.SignatureSize:]
+	// Extract fields
+	destHash := data[2:18]
+	publicKey := data[18:50]
+	hopsByte := data[50]
+
+	// Validate hop count matches header
+	if hopsByte != hopCount {
+		return errors.New("inconsistent hop count in packet")
+	}
+
+	// Extract app data length and content
+	appDataLen := binary.BigEndian.Uint16(data[51:53])
+	appDataEnd := 53 + int(appDataLen)
+
+	if appDataEnd > len(data) {
+		return errors.New("invalid app data length")
+	}
+
+	appData := data[53:appDataEnd]
+
+	// Handle ratchet ID if present
+	var ratchetID []byte
+	signatureStart := appDataEnd
+
+	remainingBytes := len(data) - appDataEnd
+	if remainingBytes > ed25519.SignatureSize {
+		ratchetID = data[appDataEnd : len(data)-ed25519.SignatureSize]
+		signatureStart = len(data) - ed25519.SignatureSize
+	}
+
+	if signatureStart+ed25519.SignatureSize > len(data) {
+		return errors.New("invalid signature position")
+	}
+
+	signature := data[signatureStart:]
 
 	// Create announced identity
 	announcedIdentity := identity.FromPublicKey(publicKey)
@@ -170,10 +208,9 @@ func (a *Announce) HandleAnnounce(data []byte) error {
 		return errors.New("invalid identity public key")
 	}
 
-	// Verify signature including ratchet if present
+	// Verify signature
 	signData := append(destHash, appData...)
-	if len(appData) > 32 { // Check for ratchet
-		ratchetID := appData[len(appData)-32:]
+	if ratchetID != nil {
 		signData = append(signData, ratchetID...)
 	}
 
@@ -227,37 +264,45 @@ func CreateHeader(ifacFlag byte, headerType byte, contextFlag byte, propType byt
 func (a *Announce) CreatePacket() []byte {
 	packet := make([]byte, 0)
 
-	// Create header for announce packet
+	// Create header according to spec
 	header := CreateHeader(
-		IFAC_NONE,            // No interface authentication
+		IFAC_NONE,            // No interface auth
 		HEADER_TYPE_1,        // One address field
 		0x00,                 // Context flag unset
 		PROP_TYPE_BROADCAST,  // Broadcast propagation
 		DEST_TYPE_SINGLE,     // Single destination
 		PACKET_TYPE_ANNOUNCE, // Announce packet type
-		byte(a.hops),         // Current hop count
+		a.hops,               // Current hop count
 	)
 	packet = append(packet, header...)
 
 	// Add destination hash (16 bytes)
 	packet = append(packet, a.destinationHash...)
 
-	// Add context byte
-	packet = append(packet, ANNOUNCE_IDENTITY)
-
 	// Add public key
 	packet = append(packet, a.identity.GetPublicKey()...)
 
+	// Add hop count byte
+	packet = append(packet, byte(a.hops))
+
 	// Add app data with length prefix
-	if a.appData != nil {
-		lenBytes := make([]byte, 2)
-		binary.BigEndian.PutUint16(lenBytes, uint16(len(a.appData)))
-		packet = append(packet, lenBytes...)
-		packet = append(packet, a.appData...)
+	appDataLen := make([]byte, 2)
+	binary.BigEndian.PutUint16(appDataLen, uint16(len(a.appData)))
+	packet = append(packet, appDataLen...)
+	packet = append(packet, a.appData...)
+
+	// Add ratchet ID if present
+	if a.ratchetID != nil {
+		packet = append(packet, a.ratchetID...)
 	}
 
 	// Add signature
-	packet = append(packet, a.signature...)
+	signData := append(a.destinationHash, a.appData...)
+	if a.ratchetID != nil {
+		signData = append(signData, a.ratchetID...)
+	}
+	signature := a.identity.Sign(signData)
+	packet = append(packet, signature...)
 
 	return packet
 }
@@ -268,25 +313,82 @@ type AnnouncePacket struct {
 
 func NewAnnouncePacket(pubKey []byte, appData []byte, announceID []byte) *AnnouncePacket {
 	packet := &AnnouncePacket{}
-	
+
 	// Build packet data
 	packet.Data = make([]byte, 0, len(pubKey)+len(appData)+len(announceID)+4)
-	
+
 	// Add header
 	packet.Data = append(packet.Data, PACKET_TYPE_ANNOUNCE)
 	packet.Data = append(packet.Data, ANNOUNCE_IDENTITY)
-	
+
 	// Add public key
 	packet.Data = append(packet.Data, pubKey...)
-	
+
 	// Add app data length and content
 	appDataLen := make([]byte, 2)
 	binary.BigEndian.PutUint16(appDataLen, uint16(len(appData)))
 	packet.Data = append(packet.Data, appDataLen...)
 	packet.Data = append(packet.Data, appData...)
-	
+
 	// Add announce ID
 	packet.Data = append(packet.Data, announceID...)
-	
+
 	return packet
+}
+
+// NewAnnounce creates a new announce packet for a destination
+func NewAnnounce(identity *identity.Identity, appData []byte, ratchetID []byte, pathResponse bool) (*Announce, error) {
+	if identity == nil {
+		return nil, errors.New("identity cannot be nil")
+	}
+
+	a := &Announce{
+		identity:        identity,
+		appData:         appData,
+		ratchetID:       ratchetID,
+		pathResponse:    pathResponse,
+		destinationHash: identity.Hash(),
+		hops:            0,
+		mutex:           &sync.RWMutex{},
+		handlers:        make([]AnnounceHandler, 0),
+	}
+
+	// Create announce packet
+	packet := make([]byte, 0)
+
+	// Add header (2 bytes)
+	packet = append(packet, PACKET_TYPE_ANNOUNCE)
+	packet = append(packet, byte(a.hops))
+
+	// Add destination hash (16 bytes)
+	packet = append(packet, a.destinationHash...)
+
+	// Add public key (32 bytes)
+	packet = append(packet, identity.GetPublicKey()...)
+
+	// Add hop count (1 byte)
+	packet = append(packet, byte(a.hops))
+
+	// Add app data with length prefix (2 bytes + data)
+	appDataLen := make([]byte, 2)
+	binary.BigEndian.PutUint16(appDataLen, uint16(len(appData)))
+	packet = append(packet, appDataLen...)
+	packet = append(packet, appData...)
+
+	// Add ratchet ID if present
+	if ratchetID != nil {
+		packet = append(packet, ratchetID...)
+	}
+
+	// Add signature
+	signData := append(a.destinationHash, appData...)
+	if ratchetID != nil {
+		signData = append(signData, ratchetID...)
+	}
+	signature := identity.Sign(signData)
+	packet = append(packet, signature...)
+
+	a.packet = packet
+
+	return a, nil
 }

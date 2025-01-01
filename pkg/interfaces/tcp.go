@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"syscall"
 	"time"
+	"unsafe"
 
 	"github.com/Sudo-Ivan/reticulum-go/pkg/common"
 )
@@ -25,6 +27,8 @@ const (
 	TCP_PROBES         = 12
 	RECONNECT_WAIT     = 5
 	INITIAL_TIMEOUT    = 5
+	INITIAL_BACKOFF    = time.Second
+	MAX_BACKOFF        = time.Minute * 5
 )
 
 type TCPClientInterface struct {
@@ -45,15 +49,18 @@ type TCPClientInterface struct {
 	enabled           bool
 }
 
-func NewTCPClient(name string, targetHost string, targetPort int, kissFraming bool, i2pTunneled bool, enabled bool) (*TCPClientInterface, error) {
+func NewTCPClientInterface(name string, targetHost string, targetPort int, kissFraming bool, i2pTunneled bool, enabled bool) (*TCPClientInterface, error) {
 	tc := &TCPClientInterface{
-		BaseInterface: NewBaseInterface(name, common.IF_TYPE_TCP, enabled),
-		targetAddr:    targetHost,
-		targetPort:    targetPort,
-		kissFraming:   kissFraming,
-		i2pTunneled:   i2pTunneled,
-		initiator:     true,
-		enabled:       enabled,
+		BaseInterface:     NewBaseInterface(name, common.IF_TYPE_TCP, enabled),
+		targetAddr:        targetHost,
+		targetPort:        targetPort,
+		kissFraming:       kissFraming,
+		i2pTunneled:       i2pTunneled,
+		initiator:         true,
+		enabled:           enabled,
+		maxReconnectTries: TCP_PROBES,
+		packetBuffer:      make([]byte, 0),
+		neverConnected:    true,
 	}
 
 	if enabled {
@@ -64,6 +71,7 @@ func NewTCPClient(name string, targetHost string, targetPort int, kissFraming bo
 		}
 		tc.conn = conn
 		tc.Online = true
+		go tc.readLoop()
 	}
 
 	return tc, nil
@@ -79,6 +87,7 @@ func (tc *TCPClientInterface) Start() error {
 
 	if tc.conn != nil {
 		tc.Online = true
+		go tc.readLoop()
 		return nil
 	}
 
@@ -89,6 +98,7 @@ func (tc *TCPClientInterface) Start() error {
 	}
 	tc.conn = conn
 	tc.Online = true
+	go tc.readLoop()
 	return nil
 }
 
@@ -166,16 +176,25 @@ func (tc *TCPClientInterface) handlePacket(data []byte) {
 		return
 	}
 
-	packetType := data[0]
+	tc.mutex.Lock()
+	tc.packetType = data[0]
+	tc.mutex.Unlock()
+
 	payload := data[1:]
 
-	switch packetType {
-	case 0x01: // Path request
-		tc.BaseInterface.ProcessIncoming(payload)
+	switch tc.packetType {
+	case 0x01: // Announce packet
+		if len(payload) >= 53 { // Minimum announce size
+			tc.BaseInterface.ProcessIncoming(payload)
+		}
 	case 0x02: // Link packet
 		if len(payload) < 40 { // minimum size for link packet
 			return
 		}
+		tc.BaseInterface.ProcessIncoming(payload)
+	case 0x03: // Announce packet
+		tc.BaseInterface.ProcessIncoming(payload)
+	case 0x04: // Transport packet
 		tc.BaseInterface.ProcessIncoming(payload)
 	default:
 		// Unknown packet type
@@ -286,38 +305,53 @@ func (tc *TCPClientInterface) reconnect() {
 	tc.reconnecting = true
 	tc.mutex.Unlock()
 
+	backoff := time.Second
+	maxBackoff := time.Minute * 5
 	retries := 0
+
 	for retries < tc.maxReconnectTries {
 		tc.teardown()
 
 		addr := fmt.Sprintf("%s:%d", tc.targetAddr, tc.targetPort)
+
 		conn, err := net.Dial("tcp", addr)
 		if err == nil {
 			tc.mutex.Lock()
 			tc.conn = conn
 			tc.Online = true
+
 			tc.neverConnected = false
 			tc.reconnecting = false
 			tc.mutex.Unlock()
 
-			// Restart read loop
 			go tc.readLoop()
 			return
 		}
 
-		retries++
-		// Wait before retrying
-		select {
-		case <-time.After(RECONNECT_WAIT * time.Second):
-			continue
+		// Log reconnection attempt
+		fmt.Printf("Failed to reconnect to %s (attempt %d/%d): %v\n",
+			addr, retries+1, tc.maxReconnectTries, err)
+
+		// Wait with exponential backoff
+		time.Sleep(backoff)
+
+		// Increase backoff time exponentially
+		backoff *= 2
+		if backoff > maxBackoff {
+			backoff = maxBackoff
 		}
+
+		retries++
 	}
 
-	// Failed to reconnect after max retries
 	tc.mutex.Lock()
 	tc.reconnecting = false
 	tc.mutex.Unlock()
+
+	// If we've exhausted all retries, perform final teardown
 	tc.teardown()
+	fmt.Printf("Failed to reconnect to %s after %d attempts\n",
+		fmt.Sprintf("%s:%d", tc.targetAddr, tc.targetPort), tc.maxReconnectTries)
 }
 
 func (tc *TCPClientInterface) Enable() {
@@ -332,6 +366,55 @@ func (tc *TCPClientInterface) Disable() {
 	tc.Online = false
 }
 
+func (tc *TCPClientInterface) IsConnected() bool {
+	tc.mutex.RLock()
+	defer tc.mutex.RUnlock()
+	return tc.conn != nil && tc.Online && !tc.reconnecting
+}
+
+func getRTTFromSocket(fd uintptr) time.Duration {
+	var info syscall.TCPInfo
+	size := uint32(syscall.SizeofTCPInfo)
+
+	_, _, err := syscall.Syscall6(
+		syscall.SYS_GETSOCKOPT,
+		fd,
+		syscall.SOL_TCP,
+		syscall.TCP_INFO,
+		uintptr(unsafe.Pointer(&info)),
+		uintptr(unsafe.Pointer(&size)),
+		0,
+	)
+
+	if err != 0 {
+		return 0
+	}
+
+	// RTT is in microseconds, convert to Duration
+	return time.Duration(info.Rtt) * time.Microsecond
+}
+
+func (tc *TCPClientInterface) GetRTT() time.Duration {
+	tc.mutex.RLock()
+	defer tc.mutex.RUnlock()
+
+	if !tc.IsConnected() {
+		return 0
+	}
+
+	if tcpConn, ok := tc.conn.(*net.TCPConn); ok {
+		var rtt time.Duration
+		if info, err := tcpConn.SyscallConn(); err == nil {
+			info.Control(func(fd uintptr) {
+				rtt = getRTTFromSocket(fd)
+			})
+			return rtt
+		}
+	}
+
+	return 0
+}
+
 type TCPServerInterface struct {
 	BaseInterface
 	connections    map[string]net.Conn
@@ -344,7 +427,7 @@ type TCPServerInterface struct {
 	packetCallback common.PacketCallback
 }
 
-func NewTCPServer(name string, bindAddr string, bindPort int, kissFraming bool, i2pTunneled bool, preferIPv6 bool) (*TCPServerInterface, error) {
+func NewTCPServerInterface(name string, bindAddr string, bindPort int, kissFraming bool, i2pTunneled bool, preferIPv6 bool) (*TCPServerInterface, error) {
 	ts := &TCPServerInterface{
 		BaseInterface: BaseInterface{
 			Name:     name,

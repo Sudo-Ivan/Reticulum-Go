@@ -1,28 +1,44 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"log"
+	"math/rand"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
 	"github.com/Sudo-Ivan/reticulum-go/internal/config"
+	"github.com/Sudo-Ivan/reticulum-go/pkg/announce"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/buffer"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/channel"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/common"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/interfaces"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/packet"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/transport"
+	"github.com/Sudo-Ivan/reticulum-go/pkg/identity"
 )
 
+var (
+	debugLevel = flag.Int("debug", 4, "Debug level (0-7)")
+)
+
+func debugLog(level int, format string, v ...interface{}) {
+	if *debugLevel >= level {
+		log.Printf("[DEBUG-%d] %s", level, fmt.Sprintf(format, v...))
+	}
+}
+
 type Reticulum struct {
-	config     *common.ReticulumConfig
-	transport  *transport.Transport
-	interfaces []interfaces.Interface
-	channels   map[string]*channel.Channel
-	buffers    map[string]*buffer.Buffer
+	config           *common.ReticulumConfig
+	transport        *transport.Transport
+	interfaces       []interfaces.Interface
+	channels         map[string]*channel.Channel
+	buffers          map[string]*buffer.Buffer
+	announceHandlers map[string][]announce.AnnounceHandler
+	pathRequests     map[string]*common.PathRequest
 }
 
 func NewReticulum(cfg *common.ReticulumConfig) (*Reticulum, error) {
@@ -30,217 +46,162 @@ func NewReticulum(cfg *common.ReticulumConfig) (*Reticulum, error) {
 		cfg = config.DefaultConfig()
 	}
 
-	t, err := transport.NewTransport(cfg)
-	if err != nil {
-		return nil, fmt.Errorf("failed to initialize transport: %v", err)
+	if err := initializeDirectories(); err != nil {
+		return nil, fmt.Errorf("failed to initialize directories: %v", err)
 	}
+	debugLog(3, "Directories initialized")
+
+	t := transport.NewTransport(cfg)
+	debugLog(3, "Transport initialized")
 
 	return &Reticulum{
-		config:     cfg,
-		transport:  t,
-		interfaces: make([]interfaces.Interface, 0),
-		channels:   make(map[string]*channel.Channel),
-		buffers:    make(map[string]*buffer.Buffer),
+		config:           cfg,
+		transport:        t,
+		interfaces:       make([]interfaces.Interface, 0),
+		channels:         make(map[string]*channel.Channel),
+		buffers:          make(map[string]*buffer.Buffer),
+		announceHandlers: make(map[string][]announce.AnnounceHandler),
+		pathRequests:     make(map[string]*common.PathRequest),
 	}, nil
 }
 
 func (r *Reticulum) handleInterface(iface common.NetworkInterface) {
-	// Create channel using transport wrapper
+	debugLog(2, "Setting up interface %s", iface.GetName())
+
 	ch := channel.NewChannel(&transportWrapper{r.transport})
 	r.channels[iface.GetName()] = ch
+	debugLog(3, "Created channel for interface %s", iface.GetName())
 
-	// Create bidirectional buffer
 	rw := buffer.CreateBidirectionalBuffer(
-		1, // Receive stream ID
-		2, // Send stream ID
+		1,
+		2,
 		ch,
 		func(size int) {
-			// Handle data ready callback
 			data := make([]byte, size)
 			iface.ProcessIncoming(data)
-			r.transport.HandlePacket(data, iface)
+
+			if len(data) > 0 && data[0] == announce.PACKET_TYPE_ANNOUNCE {
+				r.handleAnnounce(data, iface)
+			} else {
+				r.transport.HandlePacket(data, iface)
+			}
+
+			debugLog(5, "Processed %d bytes from interface %s", size, iface.GetName())
 		},
 	)
 
-	// Store the buffer
 	r.buffers[iface.GetName()] = &buffer.Buffer{
 		ReadWriter: rw,
 	}
 
-	// Set up packet callback
 	iface.SetPacketCallback(func(data []byte, ni common.NetworkInterface) {
 		if buf, ok := r.buffers[ni.GetName()]; ok {
 			if _, err := buf.Write(data); err != nil {
-				log.Printf("Error writing to buffer for interface %s: %v", ni.GetName(), err)
+				debugLog(1, "Error writing to buffer for interface %s: %v", ni.GetName(), err)
 			}
+			debugLog(6, "Written %d bytes to interface %s buffer", len(data), ni.GetName())
 		}
 		r.transport.HandlePacket(data, ni)
 	})
 }
 
-func (r *Reticulum) Start() error {
-	log.Printf("Starting Reticulum...")
+func (r *Reticulum) monitorInterfaces() {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
 
-	if err := r.transport.Start(); err != nil {
-		return fmt.Errorf("failed to start transport: %v", err)
-	}
-	log.Printf("Transport started successfully")
-
-	for name, ifaceConfig := range r.config.Interfaces {
-		if !ifaceConfig.Enabled {
-			log.Printf("Skipping disabled interface %s", name)
-			continue
-		}
-
-		log.Printf("Configuring interface %s (type=%s)...", name, ifaceConfig.Type)
-		var iface interfaces.Interface
-
-		switch ifaceConfig.Type {
-		case "TCPClientInterface":
-			log.Printf("Creating TCP client interface %s -> %s:%d", name, ifaceConfig.TargetHost, ifaceConfig.TargetPort)
-			client, err := interfaces.NewTCPClient(
-				ifaceConfig.Name,
-				ifaceConfig.TargetHost,
-				ifaceConfig.TargetPort,
-				ifaceConfig.KISSFraming,
-				ifaceConfig.I2PTunneled,
-				ifaceConfig.Enabled,
-			)
-			if err != nil {
-				if r.config.PanicOnInterfaceErr {
-					return fmt.Errorf("failed to create TCP client interface %s: %v", name, err)
-				}
-				log.Printf("Failed to create TCP client interface %s: %v", name, err)
-				continue
+	for range ticker.C {
+		for _, iface := range r.interfaces {
+			if tcpClient, ok := iface.(*interfaces.TCPClientInterface); ok {
+				debugLog(4, "Interface %s status - Connected: %v, RTT: %v",
+					iface.GetName(),
+					tcpClient.IsConnected(),
+					tcpClient.GetRTT(),
+				)
 			}
-			iface = client
-
-		case "TCPServerInterface":
-			log.Printf("Creating TCP server interface %s on %s:%d", name, ifaceConfig.Address, ifaceConfig.Port)
-			server, err := interfaces.NewTCPServer(
-				ifaceConfig.Name,
-				ifaceConfig.Address,
-				ifaceConfig.Port,
-				ifaceConfig.KISSFraming,
-				ifaceConfig.I2PTunneled,
-				ifaceConfig.PreferIPv6,
-			)
-			if err != nil {
-				if r.config.PanicOnInterfaceErr {
-					return fmt.Errorf("failed to create TCP server interface %s: %v", name, err)
-				}
-				log.Printf("Failed to create TCP server interface %s: %v", name, err)
-				continue
-			}
-			iface = server
-
-		case "UDPInterface":
-			addr := fmt.Sprintf("%s:%d", ifaceConfig.Address, ifaceConfig.Port)
-			target := ""
-			if ifaceConfig.TargetAddress != "" {
-				target = fmt.Sprintf("%s:%d", ifaceConfig.TargetHost, ifaceConfig.TargetPort)
-			}
-			log.Printf("Creating UDP interface %s on %s -> %s", name, addr, target)
-			udp, err := interfaces.NewUDPInterface(
-				ifaceConfig.Name,
-				addr,
-				target,
-				ifaceConfig.Enabled,
-			)
-			if err != nil {
-				if r.config.PanicOnInterfaceErr {
-					return fmt.Errorf("failed to create UDP interface %s: %v", name, err)
-				}
-				log.Printf("Failed to create UDP interface %s: %v", name, err)
-				continue
-			}
-			iface = udp
-
-		case "AutoInterface":
-			log.Printf("Creating Auto interface %s (group=%s, discovery=%d, data=%d)",
-				name, ifaceConfig.GroupID, ifaceConfig.DiscoveryPort, ifaceConfig.DataPort)
-			auto, err := interfaces.NewAutoInterface(
-				ifaceConfig.Name,
-				ifaceConfig,
-			)
-			if err != nil {
-				if r.config.PanicOnInterfaceErr {
-					return fmt.Errorf("failed to create Auto interface %s: %v", name, err)
-				}
-				log.Printf("Failed to create Auto interface %s: %v", name, err)
-				continue
-			}
-			iface = auto
-
-		default:
-			log.Printf("Unknown interface type: %s", ifaceConfig.Type)
-			continue
-		}
-
-		if iface != nil {
-			log.Printf("Starting interface %s...", name)
-			if err := iface.Start(); err != nil {
-				if r.config.PanicOnInterfaceErr {
-					return fmt.Errorf("failed to start interface %s: %v", name, err)
-				}
-				log.Printf("Failed to start interface %s: %v", name, err)
-				continue
-			}
-
-			netIface := iface.(common.NetworkInterface)
-			r.handleInterface(netIface)
-			r.interfaces = append(r.interfaces, iface)
-			log.Printf("Created and started interface %s (type=%v, enabled=%v)",
-				iface.GetName(), iface.GetType(), iface.IsEnabled())
-			log.Printf("Interface %s started successfully", name)
 		}
 	}
-
-	log.Printf("Reticulum initialized with config at: %s", r.config.ConfigPath)
-	log.Printf("Press Ctrl+C to stop...")
-	return nil
-}
-
-func (r *Reticulum) Stop() error {
-	// Close all buffers
-	for _, buf := range r.buffers {
-		if err := buf.Close(); err != nil {
-			log.Printf("Error closing buffer: %v", err)
-		}
-	}
-
-	// Close all channels
-	for _, ch := range r.channels {
-		if err := ch.Close(); err != nil {
-			log.Printf("Error closing channel: %v", err)
-		}
-	}
-
-	// Stop interfaces
-	for _, iface := range r.interfaces {
-		if err := iface.Stop(); err != nil {
-			log.Printf("Error stopping interface %s: %v", iface.GetName(), err)
-		}
-	}
-
-	if err := r.transport.Close(); err != nil {
-		return fmt.Errorf("failed to close transport: %v", err)
-	}
-	return nil
 }
 
 func main() {
-	log.Printf("Initializing Reticulum...")
+	flag.Parse()
+	debugLog(1, "Initializing Reticulum (Debug Level: %d)...", *debugLevel)
 
 	cfg, err := config.InitConfig()
 	if err != nil {
 		log.Fatalf("Failed to initialize config: %v", err)
+	}
+	debugLog(2, "Configuration loaded from: %s", cfg.ConfigPath)
+
+	// Add default TCP interfaces if none configured
+	if len(cfg.Interfaces) == 0 {
+		debugLog(2, "No interfaces configured, adding default TCP interfaces")
+		cfg.Interfaces = make(map[string]*common.InterfaceConfig)
+
+		cfg.Interfaces["amsterdam"] = &common.InterfaceConfig{
+			Type:       "TCPClientInterface",
+			Enabled:    true,
+			TargetHost: "amsterdam.connect.reticulum.network",
+			TargetPort: 4965,
+			Name:       "amsterdam",
+		}
+
+		cfg.Interfaces["btb"] = &common.InterfaceConfig{
+			Type:       "TCPClientInterface",
+			Enabled:    true,
+			TargetHost: "reticulum.betweentheborders.com",
+			TargetPort: 4242,
+			Name:       "btb",
+		}
 	}
 
 	r, err := NewReticulum(cfg)
 	if err != nil {
 		log.Fatalf("Failed to create Reticulum instance: %v", err)
 	}
+
+	go r.monitorInterfaces()
+
+	// Register announce handler using the instance's transport
+	handler := &AnnounceHandler{
+		aspectFilter: []string{"*"}, // Handle all aspects
+	}
+	r.transport.RegisterAnnounceHandler(handler)
+
+	// Create a destination to announce
+	dest, err := identity.NewIdentity()
+	if err != nil {
+		log.Fatalf("Failed to create identity: %v", err)
+	}
+
+	// Create announce for the destination
+	announce, err := announce.NewAnnounce(
+		dest,
+		[]byte("Reticulum-Go"), // App data
+		nil,                   // No ratchet ID
+		false,                 // Not a path response
+	)
+	if err != nil {
+		log.Fatalf("Failed to create announce: %v", err)
+	}
+
+	// Propagate announce to all interfaces periodically
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				for _, iface := range r.interfaces {
+					if netIface, ok := iface.(common.NetworkInterface); ok {
+						if err := announce.Propagate([]common.NetworkInterface{netIface}); err != nil {
+							debugLog(1, "Failed to propagate announce: %v", err)
+						}
+					}
+				}
+			}
+		}
+	}()
 
 	if err := r.Start(); err != nil {
 		log.Fatalf("Failed to start Reticulum: %v", err)
@@ -250,11 +211,11 @@ func main() {
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	<-sigChan
 
-	log.Printf("\nShutting down...")
+	debugLog(1, "Shutting down...")
 	if err := r.Stop(); err != nil {
-		log.Printf("Error during shutdown: %v", err)
+		debugLog(1, "Error during shutdown: %v", err)
 	}
-	log.Printf("Goodbye!")
+	debugLog(1, "Goodbye!")
 }
 
 // Update transportWrapper to use packet.Packet
@@ -305,4 +266,189 @@ func (tw *transportWrapper) SetPacketTimeout(packet interface{}, callback func(i
 
 func (tw *transportWrapper) SetPacketDelivered(packet interface{}, callback func(interface{})) {
 	callback(packet)
+}
+
+func initializeDirectories() error {
+	dirs := []string{
+		".reticulum-go",
+		".reticulum-go/storage",
+		".reticulum-go/storage/destinations",
+		".reticulum-go/storage/identities",
+		".reticulum-go/storage/ratchets",
+	}
+
+	for _, dir := range dirs {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return fmt.Errorf("failed to create directory %s: %v", dir, err)
+		}
+	}
+	return nil
+}
+
+func (r *Reticulum) Start() error {
+	debugLog(2, "Starting Reticulum...")
+
+	if err := r.transport.Start(); err != nil {
+		return fmt.Errorf("failed to start transport: %v", err)
+	}
+	debugLog(3, "Transport started successfully")
+
+	for name, ifaceConfig := range r.config.Interfaces {
+		if !ifaceConfig.Enabled {
+			debugLog(2, "Skipping disabled interface %s", name)
+			continue
+		}
+
+		debugLog(2, "Configuring interface %s (type=%s)...", name, ifaceConfig.Type)
+		var iface interfaces.Interface
+
+		switch ifaceConfig.Type {
+		case "TCPClientInterface":
+			client, err := interfaces.NewTCPClientInterface(
+				ifaceConfig.Name,
+				ifaceConfig.TargetHost,
+				ifaceConfig.TargetPort,
+				ifaceConfig.KISSFraming,
+				ifaceConfig.I2PTunneled,
+				ifaceConfig.Enabled,
+			)
+			if err != nil {
+				if r.config.PanicOnInterfaceErr {
+					return fmt.Errorf("failed to create TCP client interface %s: %v", name, err)
+				}
+				debugLog(1, "Failed to create TCP client interface %s: %v", name, err)
+				continue
+			}
+			iface = client
+
+		case "TCPServerInterface":
+			server, err := interfaces.NewTCPServerInterface(
+				ifaceConfig.Name,
+				ifaceConfig.Address,
+				ifaceConfig.Port,
+				ifaceConfig.KISSFraming,
+				ifaceConfig.I2PTunneled,
+				ifaceConfig.PreferIPv6,
+			)
+			if err != nil {
+				if r.config.PanicOnInterfaceErr {
+					return fmt.Errorf("failed to create TCP server interface %s: %v", name, err)
+				}
+				debugLog(1, "Failed to create TCP server interface %s: %v", name, err)
+				continue
+			}
+			iface = server
+		}
+
+		if iface != nil {
+			debugLog(2, "Starting interface %s...", name)
+			if err := iface.Start(); err != nil {
+				if r.config.PanicOnInterfaceErr {
+					return fmt.Errorf("failed to start interface %s: %v", name, err)
+				}
+				debugLog(1, "Failed to start interface %s: %v", name, err)
+				continue
+			}
+
+			netIface := iface.(common.NetworkInterface)
+			r.handleInterface(netIface)
+			r.interfaces = append(r.interfaces, iface)
+			debugLog(3, "Interface %s started successfully", name)
+		}
+	}
+
+	debugLog(2, "Reticulum started successfully")
+	return nil
+}
+
+func (r *Reticulum) Stop() error {
+	debugLog(2, "Stopping Reticulum...")
+
+	for _, buf := range r.buffers {
+		if err := buf.Close(); err != nil {
+			debugLog(1, "Error closing buffer: %v", err)
+		}
+	}
+
+	for _, ch := range r.channels {
+		if err := ch.Close(); err != nil {
+			debugLog(1, "Error closing channel: %v", err)
+		}
+	}
+
+	for _, iface := range r.interfaces {
+		if err := iface.Stop(); err != nil {
+			debugLog(1, "Error stopping interface %s: %v", iface.GetName(), err)
+		}
+	}
+
+	if err := r.transport.Close(); err != nil {
+		return fmt.Errorf("failed to close transport: %v", err)
+	}
+
+	debugLog(2, "Reticulum stopped successfully")
+	return nil
+}
+
+func (r *Reticulum) handleAnnounce(data []byte, iface common.NetworkInterface) {
+	a := &announce.Announce{}
+	if err := a.HandleAnnounce(data); err != nil {
+		debugLog(1, "Error handling announce: %v", err)
+		return
+	}
+
+	// Add random delay before propagation (0-2 seconds)
+	delay := time.Duration(rand.Float64() * 2 * float64(time.Second))
+	time.Sleep(delay)
+
+	// Check interface modes and propagate according to RNS rules
+	for _, otherIface := range r.interfaces {
+		if otherIface.GetName() == iface.GetName() {
+			continue
+		}
+
+		srcMode := iface.GetMode()
+		dstMode := otherIface.GetMode()
+
+		// Skip propagation based on interface modes
+		if srcMode == common.IF_MODE_ACCESS_POINT && dstMode != common.IF_MODE_FULL {
+			debugLog(4, "Skipping announce propagation from AP to non-full mode interface")
+			continue
+		}
+		if srcMode == common.IF_MODE_ROAMING && dstMode == common.IF_MODE_ACCESS_POINT {
+			debugLog(4, "Skipping announce propagation from roaming to AP interface")
+			continue
+		}
+
+		// Check if interface has bandwidth available for announces
+		if err := a.Propagate([]common.NetworkInterface{otherIface}); err != nil {
+			debugLog(1, "Error propagating announce: %v", err)
+		}
+	}
+}
+
+type AnnounceHandler struct {
+	aspectFilter []string
+}
+
+func (h *AnnounceHandler) AspectFilter() []string {
+	return h.aspectFilter
+}
+
+func (h *AnnounceHandler) ReceivedAnnounce(destHash []byte, identity interface{}, appData []byte) error {
+	debugLog(3, "Received announce from %x", destHash)
+
+	if len(appData) > 0 {
+		debugLog(3, "Announce contained app data: %s", string(appData))
+	}
+
+	if id, ok := identity.([]byte); ok {
+		debugLog(4, "Identity: %x", id)
+	}
+
+	return nil
+}
+
+func (h *AnnounceHandler) ReceivePathResponses() bool {
+	return true
 }
