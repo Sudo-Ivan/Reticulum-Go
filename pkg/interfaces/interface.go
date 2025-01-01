@@ -11,25 +11,27 @@ import (
 )
 
 const (
-	BITRATE_MINIMUM = 5 // Minimum required bitrate in bits/sec
+	BITRATE_MINIMUM = 1200 // Minimum bitrate in bits/second
 	MODE_FULL       = 0x01
-	
+
 	// Interface modes
 	MODE_GATEWAY      = 0x02
 	MODE_ACCESS_POINT = 0x03
-	MODE_ROAMING     = 0x04
-	MODE_BOUNDARY    = 0x05
+	MODE_ROAMING      = 0x04
+	MODE_BOUNDARY     = 0x05
 
 	// Interface types
 	TYPE_UDP = 0x01
 	TYPE_TCP = 0x02
+
+	PROPAGATION_RATE = 0.02 // 2% of interface bandwidth
 )
 
 type Interface interface {
 	GetName() string
 	GetType() common.InterfaceType
 	GetMode() common.InterfaceMode
-	IsOnline() bool 
+	IsOnline() bool
 	IsDetached() bool
 	IsEnabled() bool
 	Detach()
@@ -46,6 +48,7 @@ type Interface interface {
 	Stop() error
 	GetMTU() int
 	GetConn() net.Conn
+	common.NetworkInterface
 }
 
 type BaseInterface struct {
@@ -61,7 +64,8 @@ type BaseInterface struct {
 	Bitrate  int64
 	TxBytes  uint64
 	RxBytes  uint64
-	
+	lastTx   time.Time
+
 	mutex          sync.RWMutex
 	packetCallback common.PacketCallback
 }
@@ -78,6 +82,7 @@ func NewBaseInterface(name string, ifType common.InterfaceType, enabled bool) Ba
 		OUT:      false,
 		MTU:      common.DEFAULT_MTU,
 		Bitrate:  BITRATE_MINIMUM,
+		lastTx:   time.Now(),
 	}
 }
 
@@ -150,7 +155,7 @@ func (i *BaseInterface) Detach() {
 }
 
 func (i *BaseInterface) IsEnabled() bool {
-	i.mutex.RLock() 
+	i.mutex.RLock()
 	defer i.mutex.RUnlock()
 	return i.Enabled && i.Online && !i.Detached
 }
@@ -197,7 +202,6 @@ func (i *BaseInterface) IsDetached() bool {
 	return i.Detached
 }
 
-// Default implementations that should be overridden by specific interfaces
 func (i *BaseInterface) Start() error {
 	return nil
 }
@@ -212,4 +216,30 @@ func (i *BaseInterface) Send(data []byte, address string) error {
 
 func (i *BaseInterface) GetConn() net.Conn {
 	return nil
+}
+
+func (i *BaseInterface) GetBandwidthAvailable() bool {
+	i.mutex.RLock()
+	defer i.mutex.RUnlock()
+
+	// If no transmission in last second, bandwidth is available
+	if time.Since(i.lastTx) > time.Second {
+		return true
+	}
+
+	// Calculate current bandwidth usage
+	bytesPerSec := float64(i.TxBytes) / time.Since(i.lastTx).Seconds()
+	currentUsage := bytesPerSec * 8 // Convert to bits/sec
+
+	// Check if usage is below threshold
+	maxUsage := float64(i.Bitrate) * PROPAGATION_RATE
+	return currentUsage < maxUsage
+}
+
+func (i *BaseInterface) updateBandwidthStats(bytes uint64) {
+	i.mutex.Lock()
+	defer i.mutex.Unlock()
+
+	i.TxBytes += bytes
+	i.lastTx = time.Now()
 }

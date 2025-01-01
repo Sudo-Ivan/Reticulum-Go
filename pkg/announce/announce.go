@@ -5,7 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
-	"log"
+	"fmt"
 	"sync"
 	"time"
 
@@ -74,14 +74,14 @@ func New(dest *identity.Identity, appData []byte, pathResponse bool) (*Announce,
 	}
 
 	a := &Announce{
-		mutex:          &sync.RWMutex{},
-		identity:       dest,
-		appData:        appData,
-		hops:           0,
-		timestamp:     time.Now().Unix(),
-		pathResponse:  pathResponse,
-		retries:       0,
-		handlers:      make([]AnnounceHandler, 0),
+		mutex:        &sync.RWMutex{},
+		identity:     dest,
+		appData:      appData,
+		hops:         0,
+		timestamp:    time.Now().Unix(),
+		pathResponse: pathResponse,
+		retries:      0,
+		handlers:     make([]AnnounceHandler, 0),
 	}
 
 	// Generate truncated hash from public key
@@ -106,27 +106,25 @@ func New(dest *identity.Identity, appData []byte, pathResponse bool) (*Announce,
 }
 
 func (a *Announce) Propagate(interfaces []common.NetworkInterface) error {
-	packet := a.CreatePacket()
+	a.mutex.RLock()
+	defer a.mutex.RUnlock()
 
-	// Enhanced logging
-	log.Printf("Creating announce packet:")
-	log.Printf("  Destination Hash: %x", a.destinationHash)
-	log.Printf("  Identity Public Key: %x", a.identity.GetPublicKey())
-	log.Printf("  App Data: %s", string(a.appData))
-	log.Printf("  Signature: %x", a.signature)
-	log.Printf("  Total Packet Size: %d bytes", len(packet))
-	log.Printf("  Raw Packet: %x", packet)
+	// Use cached packet if available, otherwise create new one
+	var packet []byte
+	if a.packet != nil {
+		packet = a.packet
+	} else {
+		packet = a.CreatePacket()
+		a.packet = packet
+	}
 
-	// Propagate to interfaces
 	for _, iface := range interfaces {
-		log.Printf("Propagating on interface %s:", iface.GetName())
-		log.Printf("  Interface Type: %d", iface.GetType())
-		log.Printf("  MTU: %d bytes", iface.GetMTU())
+		if !iface.IsEnabled() || !iface.GetBandwidthAvailable() {
+			continue
+		}
 
 		if err := iface.Send(packet, ""); err != nil {
-			log.Printf("  Failed to propagate: %v", err)
-		} else {
-			log.Printf("  Successfully propagated")
+			return fmt.Errorf("failed to propagate on interface %s: %w", iface.GetName(), err)
 		}
 	}
 
