@@ -1,10 +1,10 @@
 package common
 
 import (
+	"encoding/binary"
 	"net"
 	"sync"
 	"time"
-	"encoding/binary"
 )
 
 // NetworkInterface defines the interface for all network communication methods
@@ -15,20 +15,21 @@ type NetworkInterface interface {
 	Enable()
 	Disable()
 	Detach()
-	
+
 	// Network operations
 	Send(data []byte, address string) error
 	GetConn() net.Conn
 	GetMTU() int
 	GetName() string
-	
+
 	// Interface properties
 	GetType() InterfaceType
 	GetMode() InterfaceMode
 	IsEnabled() bool
 	IsOnline() bool
 	IsDetached() bool
-	
+	GetBandwidthAvailable() bool
+
 	// Packet handling
 	ProcessIncoming([]byte)
 	ProcessOutgoing([]byte) error
@@ -55,6 +56,7 @@ type BaseInterface struct {
 
 	TxBytes uint64
 	RxBytes uint64
+	lastTx  time.Time
 
 	Mutex          sync.RWMutex
 	Owner          interface{}
@@ -70,6 +72,7 @@ func NewBaseInterface(name string, ifaceType InterfaceType, enabled bool) BaseIn
 		Enabled: enabled,
 		MTU:     DEFAULT_MTU,
 		Bitrate: BITRATE_MINIMUM,
+		lastTx:  time.Now(),
 	}
 }
 
@@ -175,16 +178,34 @@ func (i *BaseInterface) SendPathRequest(data []byte) error {
 func (i *BaseInterface) SendLinkPacket(dest []byte, data []byte, timestamp time.Time) error {
 	// Create link packet
 	packet := make([]byte, 0, len(dest)+len(data)+9) // 1 byte type + dest + 8 byte timestamp
-	packet = append(packet, 0x02)                     // Link packet type
+	packet = append(packet, 0x02)                    // Link packet type
 	packet = append(packet, dest...)
-	
+
 	// Add timestamp
 	ts := make([]byte, 8)
 	binary.BigEndian.PutUint64(ts, uint64(timestamp.Unix()))
 	packet = append(packet, ts...)
-	
+
 	// Add data
 	packet = append(packet, data...)
-	
+
 	return i.Send(packet, "")
+}
+
+func (i *BaseInterface) GetBandwidthAvailable() bool {
+	i.Mutex.RLock()
+	defer i.Mutex.RUnlock()
+
+	// If no transmission in last second, bandwidth is available
+	if time.Since(i.lastTx) > time.Second {
+		return true
+	}
+
+	// Calculate current bandwidth usage
+	bytesPerSec := float64(i.TxBytes) / time.Since(i.lastTx).Seconds()
+	currentUsage := bytesPerSec * 8 // Convert to bits/sec
+
+	// Check if usage is below threshold (2% of total bitrate)
+	maxUsage := float64(i.Bitrate) * 0.02 // 2% propagation rate
+	return currentUsage < maxUsage
 }

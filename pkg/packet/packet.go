@@ -105,12 +105,12 @@ func (p *Packet) Serialize() ([]byte, error) {
 }
 
 type AnnouncePacket struct {
-	Header      [2]byte
-	DestHash    []byte
-	PublicKey   []byte
-	AppData     []byte
-	RandomBlob  []byte
-	Signature   []byte
-	HopCount    byte
-	Timestamp   time.Time
+	Header     [2]byte
+	DestHash   []byte
+	PublicKey  []byte
+	AppData    []byte
+	RandomBlob []byte
+	Signature  []byte
+	HopCount   byte
+	Timestamp  time.Time
 }

@@ -74,7 +74,7 @@ func NewRawChannelReader(streamID int, ch *channel.Channel) *RawChannelReader {
 		buffer:    bytes.NewBuffer(nil),
 		callbacks: make([]func(int), 0),
 	}
-	
+
 	ch.AddMessageHandler(reader.HandleMessage)
 	return reader
 }

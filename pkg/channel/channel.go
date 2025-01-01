@@ -84,11 +84,11 @@ func NewChannel(link transport.LinkInterface) *Channel {
 	return &Channel{
 		link:            link,
 		messageHandlers: make([]func(MessageBase) bool, 0),
-		mutex:          sync.RWMutex{},
-		windowMax:      WindowMaxSlow,
-		windowMin:      WindowMinSlow,
-		window:        WindowInitial,
-		maxTries:      3,
+		mutex:           sync.RWMutex{},
+		windowMax:       WindowMaxSlow,
+		windowMin:       WindowMinSlow,
+		window:          WindowInitial,
+		maxTries:        3,
 	}
 }
 

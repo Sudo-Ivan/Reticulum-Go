@@ -15,10 +15,10 @@ import (
 	"github.com/Sudo-Ivan/reticulum-go/pkg/buffer"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/channel"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/common"
+	"github.com/Sudo-Ivan/reticulum-go/pkg/identity"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/interfaces"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/packet"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/transport"
-	"github.com/Sudo-Ivan/reticulum-go/pkg/identity"
 )
 
 var (
@@ -177,14 +177,24 @@ func main() {
 	announce, err := announce.NewAnnounce(
 		dest,
 		[]byte("Reticulum-Go"), // App data
-		nil,                   // No ratchet ID
-		false,                 // Not a path response
+		nil,                    // No ratchet ID
+		false,                  // Not a path response
 	)
 	if err != nil {
 		log.Fatalf("Failed to create announce: %v", err)
 	}
 
-	// Propagate announce to all interfaces periodically
+	// Send initial announce immediately
+	for _, iface := range r.interfaces {
+		if netIface, ok := iface.(common.NetworkInterface); ok {
+			debugLog(2, "Sending initial announce on interface %s", netIface.GetName())
+			if err := announce.Propagate([]common.NetworkInterface{netIface}); err != nil {
+				debugLog(1, "Failed to propagate initial announce: %v", err)
+			}
+		}
+	}
+
+	// Then start periodic announces
 	go func() {
 		ticker := time.NewTicker(5 * time.Minute)
 		defer ticker.Stop()
@@ -391,11 +401,14 @@ func (r *Reticulum) Stop() error {
 }
 
 func (r *Reticulum) handleAnnounce(data []byte, iface common.NetworkInterface) {
+	debugLog(2, "Received announce packet on interface %s (%d bytes)", iface.GetName(), len(data))
+
 	a := &announce.Announce{}
 	if err := a.HandleAnnounce(data); err != nil {
 		debugLog(1, "Error handling announce: %v", err)
 		return
 	}
+	debugLog(3, "Successfully parsed announce packet")
 
 	// Add random delay before propagation (0-2 seconds)
 	delay := time.Duration(rand.Float64() * 2 * float64(time.Second))
@@ -421,8 +434,10 @@ func (r *Reticulum) handleAnnounce(data []byte, iface common.NetworkInterface) {
 		}
 
 		// Check if interface has bandwidth available for announces
-		if err := a.Propagate([]common.NetworkInterface{otherIface}); err != nil {
-			debugLog(1, "Error propagating announce: %v", err)
+		if netIface, ok := otherIface.(common.NetworkInterface); ok {
+			if err := a.Propagate([]common.NetworkInterface{netIface}); err != nil {
+				debugLog(1, "Error propagating announce: %v", err)
+			}
 		}
 	}
 }
