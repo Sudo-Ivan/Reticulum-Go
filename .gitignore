@@ -4,5 +4,3 @@ logs/
 .json
 
 bin/
-rns-announce
-reticulum-go
