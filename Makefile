@@ -52,7 +52,7 @@ build-darwin:
 build-all: build-linux build-windows build-darwin
 
 run-reticulum:
-	@./$(BUILD_DIR)/reticulum
+	@./$(BUILD_DIR)/reticulum-go
 
 run-announce:
 	@./$(BUILD_DIR)/rns-announce
