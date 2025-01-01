@@ -43,7 +43,7 @@ const (
 	DEBUG_VERBOSE         = 4    // Detailed information
 	DEBUG_TRACE           = 5    // Very detailed tracing
 	DEBUG_PACKETS         = 6    // Packet-level details
-	DEBUG_ALL             = 7    // Everything
+	DEBUG_ALL             = 7    // Everything including identity operations
 )
 
 type Reticulum struct {
@@ -336,11 +336,10 @@ func (tw *transportWrapper) GetStatus() int {
 
 func (tw *transportWrapper) Send(data []byte) interface{} {
 	p := &packet.Packet{
-		Header: [2]byte{
-			packet.PacketTypeData, // First byte
-			0,                     // Second byte (hops)
-		},
-		Data: data,
+		PacketType: packet.PacketTypeData,
+		Hops:       0,
+		Data:       data,
+		HeaderType: packet.HeaderType1,
 	}
 
 	err := tw.Transport.SendPacket(p)
@@ -490,12 +489,25 @@ func (r *Reticulum) Stop() error {
 }
 
 func (r *Reticulum) handleAnnounce(data []byte, iface common.NetworkInterface) {
-	debugLog(2, "Received announce packet on interface %s (%d bytes)", iface.GetName(), len(data))
+	debugLog(DEBUG_INFO, "Received announce packet on interface %s (%d bytes)", iface.GetName(), len(data))
 
 	a := &announce.Announce{}
 	if err := a.HandleAnnounce(data); err != nil {
-		debugLog(1, "Error handling announce: %v", err)
+		debugLog(DEBUG_ERROR, "Error handling announce: %v", err)
 		return
+	}
+
+	// Log announce details
+	debugLog(DEBUG_ALL, "Announce details:")
+	debugLog(DEBUG_ALL, "  Hash: %x", a.Hash())
+
+	// Get fields using packet data
+	packet := a.GetPacket()
+	if len(packet) > 2 {
+		destHash := packet[2:18]
+		hops := packet[50]
+		debugLog(DEBUG_ALL, "  Destination Hash: %x", destHash)
+		debugLog(DEBUG_ALL, "  Hops: %d", hops)
 	}
 
 	// Check announce history
@@ -581,15 +593,29 @@ func (h *AnnounceHandler) AspectFilter() []string {
 	return h.aspectFilter
 }
 
-func (h *AnnounceHandler) ReceivedAnnounce(destHash []byte, identity interface{}, appData []byte) error {
-	debugLog(3, "Received announce from %x", destHash)
+func (h *AnnounceHandler) ReceivedAnnounce(destHash []byte, id interface{}, appData []byte) error {
+	debugLog(DEBUG_INFO, "Received announce from %x", destHash)
 
 	if len(appData) > 0 {
-		debugLog(3, "Announce contained app data: %s", string(appData))
+		debugLog(DEBUG_VERBOSE, "Announce app data: %s", string(appData))
 	}
 
-	if id, ok := identity.([]byte); ok {
-		debugLog(4, "Identity: %x", id)
+	// Type assert using the package path
+	if identity, ok := id.(*identity.Identity); ok {
+		debugLog(DEBUG_ALL, "Identity details:")
+		debugLog(DEBUG_ALL, "  Hash: %s", identity.GetHexHash())
+		debugLog(DEBUG_ALL, "  Public Key: %x", identity.GetPublicKey())
+
+		ratchets := identity.GetRatchets()
+		debugLog(DEBUG_ALL, "  Active Ratchets: %d", len(ratchets))
+
+		if len(ratchets) > 0 {
+			ratchetKey := identity.GetCurrentRatchetKey()
+			if ratchetKey != nil {
+				ratchetID := identity.GetRatchetID(ratchetKey)
+				debugLog(DEBUG_ALL, "  Current Ratchet ID: %x", ratchetID)
+			}
+		}
 	}
 
 	return nil

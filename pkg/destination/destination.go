@@ -50,7 +50,7 @@ type Destination struct {
 	destType  byte
 	appName   string
 	aspects   []string
-	hash      []byte
+	hashValue []byte
 
 	acceptsLinks  bool
 	proofStrategy byte
@@ -95,12 +95,12 @@ func New(id *identity.Identity, direction byte, destType byte, appName string, a
 	}
 
 	// Generate destination hash
-	d.hash = d.Hash()
+	d.hashValue = d.calculateHash()
 
 	return d, nil
 }
 
-func (d *Destination) Hash() []byte {
+func (d *Destination) calculateHash() []byte {
 	nameHash := sha256.Sum256([]byte(d.ExpandName()))
 	identityHash := sha256.Sum256(d.identity.GetPublicKey())
 
@@ -134,8 +134,8 @@ func (d *Destination) Announce(appData []byte) error {
 	packet := make([]byte, 0)
 
 	// Add destination hash
-	packet = append(packet, d.hash...)
-	log.Printf("[DEBUG-4] Added destination hash %x to announce", d.hash[:8])
+	packet = append(packet, d.hashValue...)
+	log.Printf("[DEBUG-4] Added destination hash %x to announce", d.hashValue[:8])
 
 	// Add identity public key
 	pubKey := d.identity.GetPublicKey()
@@ -385,4 +385,22 @@ func (d *Destination) GetPublicKey() []byte {
 
 func (d *Destination) GetIdentity() *identity.Identity {
 	return d.identity
+}
+
+func (d *Destination) GetType() byte {
+	return d.destType
+}
+
+func (d *Destination) GetHash() []byte {
+	d.mutex.RLock()
+	defer d.mutex.RUnlock()
+	if d.hashValue == nil {
+		d.mutex.RUnlock()
+		d.mutex.Lock()
+		defer d.mutex.Unlock()
+		if d.hashValue == nil {
+			d.hashValue = d.calculateHash()
+		}
+	}
+	return d.hashValue
 }

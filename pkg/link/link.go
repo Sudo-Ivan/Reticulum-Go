@@ -5,7 +5,7 @@ import (
 	"crypto/cipher"
 	"crypto/ed25519"
 	"crypto/rand"
-	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -16,6 +16,8 @@ import (
 	"github.com/Sudo-Ivan/reticulum-go/pkg/destination"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/identity"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/packet"
+	"github.com/Sudo-Ivan/reticulum-go/pkg/pathfinder"
+	"github.com/Sudo-Ivan/reticulum-go/pkg/resolver"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/resource"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/transport"
 )
@@ -38,10 +40,6 @@ const (
 	STATUS_CLOSED  = 0x02
 	STATUS_FAILED  = 0x03
 
-	PACKET_TYPE_DATA     = 0x00
-	PACKET_TYPE_LINK     = 0x01
-	PACKET_TYPE_IDENTIFY = 0x02
-
 	PROVE_NONE = 0x00
 	PROVE_ALL  = 0x01
 	PROVE_APP  = 0x02
@@ -56,6 +54,7 @@ type Link struct {
 	lastOutbound     time.Time
 	lastDataReceived time.Time
 	lastDataSent     time.Time
+	pathFinder       *pathfinder.PathFinder
 
 	remoteIdentity *identity.Identity
 	sessionKey     []byte
@@ -97,6 +96,7 @@ func NewLink(dest *destination.Destination, transport *transport.Transport, esta
 		lastOutbound:        time.Time{},
 		lastDataReceived:    time.Time{},
 		lastDataSent:        time.Time{},
+		pathFinder:          pathfinder.NewPathFinder(),
 	}
 }
 
@@ -117,16 +117,21 @@ func (l *Link) Establish() error {
 
 	log.Printf("[DEBUG-4] Creating link request packet for destination %x", destPublicKey[:8])
 
-	// Create link request packet
-	p, err := packet.NewPacket(
-		packet.PACKET_TYPE_LINK,
-		0x00,
-		0x00,
-		destPublicKey,
-		l.linkID,
-	)
-	if err != nil {
-		log.Printf("[DEBUG-3] Failed to create link request packet: %v", err)
+	p := &packet.Packet{
+		HeaderType:      packet.HeaderType1,
+		PacketType:      packet.PacketTypeLinkReq,
+		TransportType:   0,
+		Context:         packet.ContextLinkIdentify,
+		ContextFlag:     packet.FlagUnset,
+		Hops:            0,
+		DestinationType: l.destination.GetType(),
+		DestinationHash: l.destination.GetHash(),
+		Data:            l.linkID,
+		CreateReceipt:   true,
+	}
+
+	if err := p.Pack(); err != nil {
+		log.Printf("[DEBUG-3] Failed to pack link request packet: %v", err)
 		return err
 	}
 
@@ -139,15 +144,20 @@ func (l *Link) Identify(id *identity.Identity) error {
 		return errors.New("link not active")
 	}
 
-	// Create identify packet
-	p, err := packet.NewPacket(
-		packet.PACKET_TYPE_IDENTIFY,
-		0x00,
-		0x00,
-		l.destination.GetPublicKey(),
-		id.GetPublicKey(),
-	)
-	if err != nil {
+	p := &packet.Packet{
+		HeaderType:      packet.HeaderType1,
+		PacketType:      packet.PacketTypeData,
+		TransportType:   0,
+		Context:         packet.ContextLinkIdentify,
+		ContextFlag:     packet.FlagUnset,
+		Hops:            0,
+		DestinationType: l.destination.GetType(),
+		DestinationHash: l.destination.GetHash(),
+		Data:            id.GetPublicKey(),
+		CreateReceipt:   true,
+	}
+
+	if err := p.Pack(); err != nil {
 		return err
 	}
 
@@ -466,11 +476,28 @@ func (l *Link) SendPacket(data []byte) error {
 		return err
 	}
 
+	p := &packet.Packet{
+		HeaderType:      packet.HeaderType1,
+		PacketType:      packet.PacketTypeData,
+		TransportType:   0,
+		Context:         packet.ContextNone,
+		ContextFlag:     packet.FlagUnset,
+		Hops:            0,
+		DestinationType: l.destination.GetType(),
+		DestinationHash: l.destination.GetHash(),
+		Data:            encrypted,
+		CreateReceipt:   false,
+	}
+
+	if err := p.Pack(); err != nil {
+		return err
+	}
+
 	log.Printf("[DEBUG-4] Sending encrypted packet of %d bytes", len(encrypted))
 	l.lastOutbound = time.Now()
 	l.lastDataSent = time.Now()
 
-	return nil
+	return l.transport.SendPacket(p)
 }
 
 func (l *Link) HandleInbound(data []byte) error {
@@ -482,55 +509,24 @@ func (l *Link) HandleInbound(data []byte) error {
 		return errors.New("link not active")
 	}
 
-	log.Printf("[DEBUG-7] Received encrypted packet of %d bytes", len(data))
+	// Decode and log packet details
+	l.decodePacket(data)
 
-	// Decrypt data using session key
-	decryptedData, err := l.decrypt(data)
-	if err != nil {
-		log.Printf("[DEBUG-3] Failed to decrypt packet: %v", err)
-		return err
-	}
-
-	// Split message and HMAC
-	if len(decryptedData) < sha256.Size {
-		log.Printf("[DEBUG-3] Received data too short: %d bytes", len(decryptedData))
-		return errors.New("received data too short")
-	}
-
-	message := decryptedData[:len(decryptedData)-sha256.Size]
-	messageHMAC := decryptedData[len(decryptedData)-sha256.Size:]
-
-	// Log packet details
-	log.Printf("[DEBUG-7] Decrypted packet details:")
-	log.Printf("[DEBUG-7] - Size: %d bytes", len(message))
-	log.Printf("[DEBUG-7] - First 16 bytes: %x", message[:min(16, len(message))])
-	if len(message) > 0 {
-		log.Printf("[DEBUG-7] - Type: 0x%02x", message[0])
-		switch message[0] {
-		case packet.PacketData:
-			log.Printf("[DEBUG-7] - Type: Data Packet")
-		case packet.PacketAnnounce:
-			log.Printf("[DEBUG-7] - Type: Announce Packet")
-		case packet.PacketLinkRequest:
-			log.Printf("[DEBUG-7] - Type: Link Request")
-		case packet.PacketProof:
-			log.Printf("[DEBUG-7] - Type: Proof Request")
-		default:
-			log.Printf("[DEBUG-7] - Type: Unknown (0x%02x)", message[0])
+	// Decrypt if we have a session key
+	if l.sessionKey != nil {
+		decrypted, err := l.decrypt(data)
+		if err != nil {
+			log.Printf("[DEBUG-3] Failed to decrypt packet: %v", err)
+			return err
 		}
-	}
-
-	// Verify HMAC
-	if !l.destination.GetIdentity().ValidateHMAC(l.hmacKey, message, messageHMAC) {
-		log.Printf("[DEBUG-3] Invalid HMAC for packet")
-		return errors.New("invalid message authentication code")
+		data = decrypted
 	}
 
 	l.lastInbound = time.Now()
 	l.lastDataReceived = time.Now()
 
 	if l.packetCallback != nil {
-		l.packetCallback(message, nil)
+		l.packetCallback(data, nil)
 	}
 
 	return nil
@@ -734,6 +730,69 @@ func (l *Link) HandleProofRequest(packet *packet.Packet) bool {
 		return false
 	default:
 		return false
+	}
+}
+
+func (l *Link) decodePacket(data []byte) {
+	if len(data) < 1 {
+		log.Printf("[DEBUG-7] Invalid packet: zero length")
+		return
+	}
+
+	packetType := data[0]
+	log.Printf("[DEBUG-7] Packet Analysis:")
+	log.Printf("[DEBUG-7] - Size: %d bytes", len(data))
+	log.Printf("[DEBUG-7] - Type: 0x%02x", packetType)
+
+	switch packetType {
+	case packet.PacketTypeData:
+		log.Printf("[DEBUG-7] - Type Description: Data Packet")
+		if len(data) > 1 {
+			log.Printf("[DEBUG-7] - Payload Size: %d bytes", len(data)-1)
+		}
+
+	case packet.PacketTypeLinkReq:
+		log.Printf("[DEBUG-7] - Type Description: Link Management")
+		if len(data) > 32 {
+			log.Printf("[DEBUG-7] - Link ID: %x", data[1:33])
+		}
+
+	case packet.PacketTypeAnnounce:
+		log.Printf("[DEBUG-7] - Type Description: RNS Announce")
+		if len(data) > 33 {
+			destHash := data[1:17]
+			pubKey := data[17:49]
+			log.Printf("[DEBUG-7] - Destination Hash: %x", destHash)
+			log.Printf("[DEBUG-7] - Public Key: %x", pubKey)
+
+			if len(data) > 81 {
+				signature := data[49:81]
+				appData := data[81:]
+				if identity.ValidateAnnounce(data, destHash, pubKey, signature, appData) {
+					log.Printf("[DEBUG-7] - Announce signature valid")
+
+					if path, ok := l.pathFinder.GetPath(hex.EncodeToString(destHash)); ok {
+						log.Printf("[DEBUG-7] - Updated path: Interface=%s, Hops=%d",
+							path.Interface, path.HopCount)
+					}
+				}
+			}
+		}
+
+	case packet.PacketTypeProof:
+		log.Printf("[DEBUG-7] - Type Description: RNS Discovery")
+		if len(data) > 17 {
+			searchHash := data[1:17]
+			log.Printf("[DEBUG-7] - Searching for Hash: %x", searchHash)
+
+			if id, err := resolver.ResolveIdentity(hex.EncodeToString(searchHash)); err == nil {
+				log.Printf("[DEBUG-7] - Found matching identity: %s", id.GetHexHash())
+			}
+		}
+
+	default:
+		log.Printf("[DEBUG-7] - Type Description: Unknown (0x%02x)", packetType)
+		log.Printf("[DEBUG-7] - Raw Hex: %x", data)
 	}
 }
 
