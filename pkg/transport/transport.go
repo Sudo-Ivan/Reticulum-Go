@@ -1,16 +1,21 @@
 package transport
 
 import (
+	"crypto/sha256"
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"log"
+	"math/rand"
 	"net"
 	"sync"
 	"time"
 
+	"github.com/Sudo-Ivan/reticulum-go/pkg/announce"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/common"
-	"github.com/Sudo-Ivan/reticulum-go/pkg/identity"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/packet"
+	"github.com/Sudo-Ivan/reticulum-go/pkg/pathfinder"
+	"github.com/Sudo-Ivan/reticulum-go/pkg/rate"
 )
 
 var (
@@ -56,6 +61,13 @@ const (
 	STATUS_ACTIVE = 1
 	STATUS_CLOSED = 2
 	STATUS_FAILED = 3
+
+	AnnounceRatePercent = 2.0  // 2% of bandwidth for announces
+	PATHFINDER_M        = 8    // Maximum hop count
+	AnnounceRateKbps    = 20.0 // 20 Kbps for announces
+
+	MAX_HOPS         = 128  // Default m value for announce propagation
+	PROPAGATION_RATE = 0.02 // 2% bandwidth cap for announces
 )
 
 type PathInfo struct {
@@ -66,29 +78,35 @@ type PathInfo struct {
 }
 
 type Transport struct {
+	mutex            sync.RWMutex
 	config           *common.ReticulumConfig
 	interfaces       map[string]common.NetworkInterface
-	paths            map[string]*common.Path
-	announceHandlers []AnnounceHandler
-	mutex            sync.RWMutex
-	handlerLock      sync.RWMutex
-	pathLock         sync.RWMutex
 	links            map[string]*Link
+	announceRate     *rate.Limiter
+	seenAnnounces    map[string]bool
+	pathfinder       *pathfinder.PathFinder
+	announceHandlers []announce.Handler
+	paths            map[string]*common.Path
 }
 
-func NewTransport(config *common.ReticulumConfig) (*Transport, error) {
+type Path struct {
+	NextHop   []byte
+	Interface common.NetworkInterface
+	HopCount  byte
+}
+
+func NewTransport(cfg *common.ReticulumConfig) *Transport {
 	t := &Transport{
-		config:     config,
-		interfaces: make(map[string]common.NetworkInterface),
-		paths:      make(map[string]*common.Path),
-		links:      make(map[string]*Link),
+		interfaces:    make(map[string]common.NetworkInterface),
+		paths:         make(map[string]*common.Path),
+		seenAnnounces: make(map[string]bool),
+		announceRate:  rate.NewLimiter(PROPAGATION_RATE, 1),
+		mutex:         sync.RWMutex{},
+		config:        cfg,
+		links:         make(map[string]*Link),
+		pathfinder:    pathfinder.NewPathFinder(),
 	}
-
-	transportMutex.Lock()
-	transportInstance = t
-	transportMutex.Unlock()
-
-	return t, nil
+	return t
 }
 
 // Add GetTransportInstance function
@@ -249,40 +267,39 @@ func (l *Link) Send(data []byte) interface{} {
 	return packet
 }
 
-type AnnounceHandler interface {
-	AspectFilter() []string
-	ReceivedAnnounce(destinationHash []byte, announcedIdentity interface{}, appData []byte) error
-	ReceivePathResponses() bool
-}
-
-func (t *Transport) RegisterAnnounceHandler(handler AnnounceHandler) {
-	t.handlerLock.Lock()
-	defer t.handlerLock.Unlock()
-
-	// Check for duplicate handlers
-	for _, h := range t.announceHandlers {
-		if h == handler {
-			return
-		}
-	}
-
+func (t *Transport) RegisterAnnounceHandler(handler announce.Handler) {
+	t.mutex.Lock()
+	defer t.mutex.Unlock()
 	t.announceHandlers = append(t.announceHandlers, handler)
 }
 
-func (t *Transport) DeregisterAnnounceHandler(handler AnnounceHandler) {
-	t.handlerLock.Lock()
-	defer t.handlerLock.Unlock()
+func (t *Transport) UnregisterAnnounceHandler(handler announce.Handler) {
+	t.mutex.Lock()
+	defer t.mutex.Unlock()
 	for i, h := range t.announceHandlers {
 		if h == handler {
 			t.announceHandlers = append(t.announceHandlers[:i], t.announceHandlers[i+1:]...)
-			return
+			break
+		}
+	}
+}
+
+func (t *Transport) notifyAnnounceHandlers(destHash []byte, identity interface{}, appData []byte) {
+	t.mutex.RLock()
+	handlers := make([]announce.Handler, len(t.announceHandlers))
+	copy(handlers, t.announceHandlers)
+	t.mutex.RUnlock()
+
+	for _, handler := range handlers {
+		if err := handler.ReceivedAnnounce(destHash, identity, appData); err != nil {
+			log.Printf("Error in announce handler: %v", err)
 		}
 	}
 }
 
 func (t *Transport) HasPath(destinationHash []byte) bool {
-	t.pathLock.RLock()
-	defer t.pathLock.RUnlock()
+	t.mutex.RLock()
+	defer t.mutex.RUnlock()
 
 	path, exists := t.paths[string(destinationHash)]
 	if !exists {
@@ -299,20 +316,20 @@ func (t *Transport) HasPath(destinationHash []byte) bool {
 }
 
 func (t *Transport) HopsTo(destinationHash []byte) uint8 {
-	t.pathLock.RLock()
-	defer t.pathLock.RUnlock()
+	t.mutex.RLock()
+	defer t.mutex.RUnlock()
 
 	path, exists := t.paths[string(destinationHash)]
 	if !exists {
 		return PathfinderM
 	}
 
-	return path.Hops
+	return path.HopCount
 }
 
 func (t *Transport) NextHop(destinationHash []byte) []byte {
-	t.pathLock.RLock()
-	defer t.pathLock.RUnlock()
+	t.mutex.RLock()
+	defer t.mutex.RUnlock()
 
 	path, exists := t.paths[string(destinationHash)]
 	if !exists {
@@ -323,8 +340,8 @@ func (t *Transport) NextHop(destinationHash []byte) []byte {
 }
 
 func (t *Transport) NextHopInterface(destinationHash []byte) string {
-	t.pathLock.RLock()
-	defer t.pathLock.RUnlock()
+	t.mutex.RLock()
+	defer t.mutex.RUnlock()
 
 	path, exists := t.paths[string(destinationHash)]
 	if !exists {
@@ -350,8 +367,8 @@ func (t *Transport) RequestPath(destinationHash []byte, onInterface string, tag 
 }
 
 func (t *Transport) UpdatePath(destinationHash []byte, nextHop []byte, interfaceName string, hops uint8) {
-	t.pathLock.Lock()
-	defer t.pathLock.Unlock()
+	t.mutex.Lock()
+	defer t.mutex.Unlock()
 
 	iface, err := t.GetInterface(interfaceName)
 	if err != nil {
@@ -359,22 +376,18 @@ func (t *Transport) UpdatePath(destinationHash []byte, nextHop []byte, interface
 	}
 
 	t.paths[string(destinationHash)] = &common.Path{
-		Interface:   iface,
 		NextHop:     nextHop,
+		Interface:   iface,
 		Hops:        hops,
 		LastUpdated: time.Now(),
 	}
 }
 
 func (t *Transport) HandleAnnounce(destinationHash []byte, identity []byte, appData []byte, announceHash []byte) {
-	t.handlerLock.RLock()
-	defer t.handlerLock.RUnlock()
+	t.mutex.RLock()
+	defer t.mutex.RUnlock()
 
-	for _, handler := range t.announceHandlers {
-		if handler.ReceivePathResponses() || announceHash != nil {
-			handler.ReceivedAnnounce(destinationHash, identity, appData)
-		}
-	}
+	t.notifyAnnounceHandlers(destinationHash, identity, appData)
 }
 
 func (t *Transport) NewDestination(identity interface{}, direction int, destType int, appName string, aspects ...string) *Destination {
@@ -639,30 +652,53 @@ func (t *Transport) handleAnnouncePacket(data []byte, iface common.NetworkInterf
 		return
 	}
 
-	destHash := data[:32]
-	var identityData, appData []byte
-
-	if len(data) > 32 {
-		splitPoint := 32
-		for i := 32; i < len(data); i++ {
-			if data[i] == 0x00 {
-				splitPoint = i
-				break
-			}
-		}
-		identityData = data[32:splitPoint]
-		if splitPoint < len(data)-1 {
-			appData = data[splitPoint+1:]
-		}
+	p := &packet.Packet{
+		Data: data,
+		Header: [2]byte{
+			0x04, // Announce packet type
+			0x00, // Initial hop count
+		},
 	}
 
-	// Use identity package's GetRandomHash
-	announceHash := identity.GetRandomHash()
-
-	// Use interface name in announce handling
-	if iface != nil {
-		t.HandleAnnounce(destHash, identityData, appData, announceHash)
+	announceHash := sha256.Sum256(data)
+	if t.seenAnnounces[string(announceHash[:])] {
+		return
 	}
+
+	// Record this announce
+	t.seenAnnounces[string(announceHash[:])] = true
+
+	// Process the announce
+	if err := t.handleAnnounce(p); err != nil {
+		log.Printf("Error handling announce: %v", err)
+		return
+	}
+
+	// Broadcast to other interfaces based on interface mode
+	t.mutex.RLock()
+	for name, otherIface := range t.interfaces {
+		// Skip the interface we received from
+		if name == iface.GetName() {
+			continue
+		}
+
+		// Check interface modes for propagation rules
+		srcMode := iface.GetMode()
+		dstMode := otherIface.GetMode()
+
+		// Skip propagation based on interface modes
+		if srcMode == common.IF_MODE_ACCESS_POINT && dstMode != common.IF_MODE_FULL {
+			continue
+		}
+		if srcMode == common.IF_MODE_ROAMING && dstMode == common.IF_MODE_ACCESS_POINT {
+			continue
+		}
+
+		if err := otherIface.Send(p.Data, ""); err != nil {
+			log.Printf("Error broadcasting announce to %s: %v", name, err)
+		}
+	}
+	t.mutex.RUnlock()
 }
 
 func (t *Transport) findLink(dest []byte) *Link {
@@ -831,32 +867,31 @@ func (l *Link) RTT() float64 {
 	return l.GetRTT()
 }
 
-func (l *Link) Resend(packet interface{}) error {
-	if p, ok := packet.(*LinkPacket); ok {
-		p.Timestamp = time.Now()
-		return p.send()
+func (l *Link) Resend(p interface{}) error {
+	if pkt, ok := p.(*packet.Packet); ok {
+		t := GetTransportInstance()
+		if t == nil {
+			return fmt.Errorf("transport not initialized")
+		}
+		return t.SendPacket(pkt)
 	}
-	return errors.New("invalid packet type")
+	return fmt.Errorf("invalid packet type")
 }
 
-func (l *Link) SetPacketTimeout(packet interface{}, callback func(interface{}), timeout time.Duration) {
-	if p, ok := packet.(*LinkPacket); ok {
-		// Start timeout timer
+func (l *Link) SetPacketTimeout(p interface{}, callback func(interface{}), timeout time.Duration) {
+	if pkt, ok := p.(*packet.Packet); ok {
 		time.AfterFunc(timeout, func() {
-			callback(p)
+			callback(pkt)
 		})
 	}
 }
 
-func (l *Link) SetPacketDelivered(packet interface{}, callback func(interface{})) {
-	if p, ok := packet.(*LinkPacket); ok {
-		// Update RTT
+func (l *Link) SetPacketDelivered(p interface{}, callback func(interface{})) {
+	if pkt, ok := p.(*packet.Packet); ok {
 		l.mutex.Lock()
-		l.rtt = time.Since(p.Timestamp)
+		l.rtt = time.Since(time.Now())
 		l.mutex.Unlock()
-
-		// Call delivery callback
-		callback(p)
+		callback(pkt)
 	}
 }
 
@@ -864,4 +899,50 @@ func (l *Link) GetStatus() int {
 	l.mutex.RLock()
 	defer l.mutex.RUnlock()
 	return l.status
+}
+
+func (t *Transport) handleAnnounce(p *packet.Packet) error {
+	// Skip if we've seen this announce before
+	announceHash := sha256.Sum256(p.Data)
+	if t.seenAnnounces[string(announceHash[:])] {
+		return nil
+	}
+
+	// Record this announce
+	t.seenAnnounces[string(announceHash[:])] = true
+
+	// Extract announce fields
+	if len(p.Data) < 53 { // Minimum size for announce packet
+		return errors.New("invalid announce packet size")
+	}
+
+	// Don't forward if max hops reached
+	if p.Header[1] >= MAX_HOPS {
+		return nil
+	}
+
+	// Add random delay before retransmission (0-2 seconds)
+	delay := time.Duration(rand.Float64() * 2 * float64(time.Second))
+	time.Sleep(delay)
+
+	// Check bandwidth allocation for announces
+	if !t.announceRate.Allow() {
+		return nil
+	}
+
+	// Increment hop count and retransmit
+	p.Header[1]++
+	return t.broadcastAnnouncePacket(p)
+}
+
+func (t *Transport) broadcastAnnouncePacket(p *packet.Packet) error {
+	t.mutex.RLock()
+	defer t.mutex.RUnlock()
+
+	for _, iface := range t.interfaces {
+		if err := iface.Send(p.Data, ""); err != nil {
+			return fmt.Errorf("failed to broadcast announce: %w", err)
+		}
+	}
+	return nil
 }

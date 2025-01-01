@@ -17,24 +17,24 @@ import (
 
 	"encoding/hex"
 
+	"github.com/Sudo-Ivan/reticulum-go/pkg/common"
 	"golang.org/x/crypto/curve25519"
 	"golang.org/x/crypto/hkdf"
-	"github.com/Sudo-Ivan/reticulum-go/pkg/common"
 )
 
 const (
-	CURVE = "Curve25519"
-	KEYSIZE = 512 // Combined length of encryption key (256) and signing key (256)
-	RATCHETSIZE = 256 
-	RATCHET_EXPIRY = 2592000 // 30 days in seconds
+	CURVE                = "Curve25519"
+	KEYSIZE              = 512 // Combined length of encryption key (256) and signing key (256)
+	RATCHETSIZE          = 256
+	RATCHET_EXPIRY       = 2592000 // 30 days in seconds
 	TRUNCATED_HASHLENGTH = 128
-	NAME_HASH_LENGTH = 80
-	
+	NAME_HASH_LENGTH     = 80
+
 	// Token constants for Fernet-like spec
-	TOKEN_OVERHEAD = 16 // AES block size
+	TOKEN_OVERHEAD   = 16 // AES block size
 	AES128_BLOCKSIZE = 16
-	HASHLENGTH = 256
-	SIGLENGTH = KEYSIZE
+	HASHLENGTH       = 256
+	SIGLENGTH        = KEYSIZE
 )
 
 type Identity struct {
@@ -45,10 +45,10 @@ type Identity struct {
 	hash            []byte
 	hexHash         string
 	appData         []byte
-	
-	ratchets        map[string][]byte
-	ratchetExpiry   map[string]int64
-	mutex           sync.RWMutex
+
+	ratchets      map[string][]byte
+	ratchetExpiry map[string]int64
+	mutex         *sync.RWMutex
 }
 
 var (
@@ -170,7 +170,7 @@ func (i *Identity) Encrypt(plaintext []byte, ratchet []byte) ([]byte, error) {
 	if _, err := io.ReadFull(rand.Reader, ephemeralPrivKey); err != nil {
 		return nil, err
 	}
-	
+
 	ephemeralPubKey, err := curve25519.X25519(ephemeralPrivKey, curve25519.Basepoint)
 	if err != nil {
 		return nil, err
@@ -183,7 +183,7 @@ func (i *Identity) Encrypt(plaintext []byte, ratchet []byte) ([]byte, error) {
 	}
 
 	// Generate shared secret
-	sharedSecret, err := curve25519.X25519(ephemeralPrivKey, targetKey) 
+	sharedSecret, err := curve25519.X25519(ephemeralPrivKey, targetKey)
 	if err != nil {
 		return nil, err
 	}
@@ -255,15 +255,15 @@ func GetRandomHash() []byte {
 	return TruncatedHash(randomData)
 }
 
-func Remember(packetHash, destHash []byte, publicKey []byte, appData []byte) {
-	if len(destHash) > TRUNCATED_HASHLENGTH/8 {
-		destHash = destHash[:TRUNCATED_HASHLENGTH/8]
-	}
+func Remember(packet []byte, destHash []byte, publicKey []byte, appData []byte) {
+	hashStr := hex.EncodeToString(destHash)
 
-	knownDestinations[string(destHash)] = []interface{}{
-		time.Now().Unix(),
-		packetHash,
-		publicKey,
+	// Store destination data as [packet, destHash, identity, appData]
+	id := FromPublicKey(publicKey)
+	knownDestinations[hashStr] = []interface{}{
+		packet,
+		destHash,
+		id,
 		appData,
 	}
 }
@@ -464,7 +464,7 @@ func (i *Identity) tryRatchetDecryption(peerPubBytes, ciphertext, ratchet []byte
 		return nil, nil, err
 	}
 	ratchetID := i.GetRatchetID(ratchetPubBytes)
-	
+
 	// Generate shared key
 	sharedKey, err := curve25519.X25519(ratchetPriv, peerPubBytes)
 	if err != nil {
@@ -617,4 +617,72 @@ func (i *Identity) GetContext() []byte {
 func (i *Identity) GetRatchetID(ratchetPubBytes []byte) []byte {
 	hash := sha256.Sum256(ratchetPubBytes)
 	return hash[:NAME_HASH_LENGTH/8]
+}
+
+func GetKnownDestination(hash string) ([]interface{}, bool) {
+	if data, exists := knownDestinations[hash]; exists {
+		return data, true
+	}
+	return nil, false
+}
+
+func (i *Identity) GetHexHash() string {
+	if i.hexHash == "" {
+		i.hexHash = hex.EncodeToString(i.Hash())
+	}
+	return i.hexHash
+}
+
+func (i *Identity) GetRatchetKey(id string) ([]byte, bool) {
+	ratchetPersistLock.Lock()
+	defer ratchetPersistLock.Unlock()
+
+	key, exists := knownRatchets[id]
+	return key, exists
+}
+
+func (i *Identity) SetRatchetKey(id string, key []byte) {
+	ratchetPersistLock.Lock()
+	defer ratchetPersistLock.Unlock()
+
+	knownRatchets[id] = key
+}
+
+// NewIdentity creates a new Identity instance with fresh keys
+func NewIdentity() (*Identity, error) {
+	// Generate Ed25519 signing keypair
+	pubKey, privKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate Ed25519 keypair: %v", err)
+	}
+
+	// Generate X25519 encryption keypair
+	var encPrivKey [32]byte
+	if _, err := io.ReadFull(rand.Reader, encPrivKey[:]); err != nil {
+		return nil, fmt.Errorf("failed to generate X25519 private key: %v", err)
+	}
+
+	encPubKey, err := curve25519.X25519(encPrivKey[:], curve25519.Basepoint)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate X25519 public key: %v", err)
+	}
+
+	i := &Identity{
+		privateKey:      encPrivKey[:],
+		publicKey:       encPubKey,
+		signingKey:      privKey,
+		verificationKey: pubKey,
+		ratchets:        make(map[string][]byte),
+		ratchetExpiry:   make(map[string]int64),
+		mutex:           &sync.RWMutex{},
+	}
+
+	// Generate hash
+	combinedPub := make([]byte, KEYSIZE/8)
+	copy(combinedPub[:KEYSIZE/16], i.publicKey)
+	copy(combinedPub[KEYSIZE/16:], i.verificationKey)
+	hash := sha256.Sum256(combinedPub)
+	i.hash = hash[:]
+
+	return i, nil
 }
