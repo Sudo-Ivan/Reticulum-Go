@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"log"
 	"sync"
 
 	"github.com/Sudo-Ivan/reticulum-go/pkg/common"
@@ -121,8 +122,11 @@ func (d *Destination) Announce(appData []byte) error {
 	d.mutex.Lock()
 	defer d.mutex.Unlock()
 
+	log.Printf("[DEBUG-4] Creating announce packet for destination %s", d.ExpandName())
+
 	// If no specific appData provided, use default
 	if appData == nil {
+		log.Printf("[DEBUG-4] Using default app data for announce")
 		appData = d.defaultAppData
 	}
 
@@ -131,9 +135,12 @@ func (d *Destination) Announce(appData []byte) error {
 
 	// Add destination hash
 	packet = append(packet, d.hash...)
+	log.Printf("[DEBUG-4] Added destination hash %x to announce", d.hash[:8])
 
 	// Add identity public key
-	packet = append(packet, d.identity.GetPublicKey()...)
+	pubKey := d.identity.GetPublicKey()
+	packet = append(packet, pubKey...)
+	log.Printf("[DEBUG-4] Added public key %x to announce", pubKey[:8])
 
 	// Add flags byte
 	flags := byte(0)
@@ -144,46 +151,52 @@ func (d *Destination) Announce(appData []byte) error {
 		flags |= 0x02
 	}
 	packet = append(packet, flags)
+	log.Printf("[DEBUG-4] Added flags byte 0x%02x to announce", flags)
 
 	// Add proof strategy
 	packet = append(packet, d.proofStrategy)
+	log.Printf("[DEBUG-4] Added proof strategy 0x%02x to announce", d.proofStrategy)
 
-	// Add app data length and data if present
+	// Add app data
 	if appData != nil {
 		appDataLen := uint16(len(appData))
 		lenBytes := make([]byte, 2)
 		binary.BigEndian.PutUint16(lenBytes, appDataLen)
 		packet = append(packet, lenBytes...)
 		packet = append(packet, appData...)
+		log.Printf("[DEBUG-4] Added %d bytes of app data to announce", appDataLen)
 	} else {
-		// No app data
 		packet = append(packet, 0x00, 0x00)
+		log.Printf("[DEBUG-4] Added empty app data to announce")
 	}
 
 	// Add ratchet data if enabled
 	if d.ratchetsEnabled {
-		// Add ratchet interval
+		log.Printf("[DEBUG-4] Adding ratchet data to announce")
 		intervalBytes := make([]byte, 4)
 		binary.BigEndian.PutUint32(intervalBytes, uint32(d.ratchetInterval))
 		packet = append(packet, intervalBytes...)
 
-		// Add current ratchet key
 		ratchetKey := d.identity.GetCurrentRatchetKey()
 		if ratchetKey == nil {
+			log.Printf("[DEBUG-3] Failed to get current ratchet key")
 			return errors.New("failed to get current ratchet key")
 		}
 		packet = append(packet, ratchetKey...)
+		log.Printf("[DEBUG-4] Added ratchet key %x to announce", ratchetKey[:8])
 	}
 
 	// Sign the announce packet
 	signature, err := d.Sign(packet)
 	if err != nil {
+		log.Printf("[DEBUG-3] Failed to sign announce packet: %v", err)
 		return fmt.Errorf("failed to sign announce packet: %w", err)
 	}
 	packet = append(packet, signature...)
+	log.Printf("[DEBUG-4] Added signature to announce packet (total size: %d bytes)", len(packet))
 
-	// Send announce packet through transport layer
-	// This will need to be implemented in the transport package
+	// Send announce packet
+	log.Printf("[DEBUG-4] Sending announce packet through transport layer")
 	return transport.SendAnnounce(packet)
 }
 
@@ -305,26 +318,32 @@ func (d *Destination) DeregisterRequestHandler(path string) bool {
 
 func (d *Destination) Encrypt(plaintext []byte) ([]byte, error) {
 	if d.destType == PLAIN {
+		log.Printf("[DEBUG-4] Using plaintext transmission for PLAIN destination")
 		return plaintext, nil
 	}
 
 	if d.identity == nil {
+		log.Printf("[DEBUG-3] Cannot encrypt: no identity available")
 		return nil, errors.New("no identity available for encryption")
 	}
 
+	log.Printf("[DEBUG-4] Encrypting %d bytes for destination type %d", len(plaintext), d.destType)
+
 	switch d.destType {
 	case SINGLE:
-		// For single destination, we need the recipient's public key
 		recipientKey := d.identity.GetPublicKey()
+		log.Printf("[DEBUG-4] Encrypting for single recipient with key %x", recipientKey[:8])
 		return d.identity.Encrypt(plaintext, recipientKey)
 	case GROUP:
 		key := d.identity.GetCurrentRatchetKey()
 		if key == nil {
+			log.Printf("[DEBUG-3] Cannot encrypt: no ratchet key available")
 			return nil, errors.New("no ratchet key available")
 		}
-		// CBC encryption with HMAC for group messages
+		log.Printf("[DEBUG-4] Encrypting for group with ratchet key %x", key[:8])
 		return d.identity.EncryptWithHMAC(plaintext, key)
 	default:
+		log.Printf("[DEBUG-3] Unsupported destination type %d for encryption", d.destType)
 		return nil, errors.New("unsupported destination type for encryption")
 	}
 }

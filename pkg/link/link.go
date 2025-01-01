@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"sync"
 	"time"
 
@@ -104,27 +105,32 @@ func (l *Link) Establish() error {
 	defer l.mutex.Unlock()
 
 	if l.status != STATUS_PENDING {
+		log.Printf("[DEBUG-3] Cannot establish link: invalid status %d", l.status)
 		return errors.New("link already established or failed")
 	}
 
 	destPublicKey := l.destination.GetPublicKey()
 	if destPublicKey == nil {
+		log.Printf("[DEBUG-3] Cannot establish link: destination has no public key")
 		return errors.New("destination has no public key")
 	}
+
+	log.Printf("[DEBUG-4] Creating link request packet for destination %x", destPublicKey[:8])
 
 	// Create link request packet
 	p, err := packet.NewPacket(
 		packet.PACKET_TYPE_LINK,
-		0x00, // flags
-		0x00, // hops
+		0x00,
+		0x00,
 		destPublicKey,
 		l.linkID,
 	)
 	if err != nil {
+		log.Printf("[DEBUG-3] Failed to create link request packet: %v", err)
 		return err
 	}
 
-	// Send through transport
+	log.Printf("[DEBUG-4] Sending link request packet with ID %x", l.linkID[:8])
 	return l.transport.SendPacket(p)
 }
 
@@ -153,26 +159,32 @@ func (l *Link) HandleIdentification(data []byte) error {
 	defer l.mutex.Unlock()
 
 	if len(data) < ed25519.PublicKeySize+ed25519.SignatureSize {
+		log.Printf("[DEBUG-3] Invalid identification data length: %d bytes", len(data))
 		return errors.New("invalid identification data length")
 	}
 
 	pubKey := data[:ed25519.PublicKeySize]
 	signature := data[ed25519.PublicKeySize:]
 
+	log.Printf("[DEBUG-4] Processing identification from public key %x", pubKey[:8])
+
 	remoteIdentity := identity.FromPublicKey(pubKey)
 	if remoteIdentity == nil {
+		log.Printf("[DEBUG-3] Invalid remote identity from public key %x", pubKey[:8])
 		return errors.New("invalid remote identity")
 	}
 
-	// Verify signature
 	signData := append(l.linkID, pubKey...)
 	if !remoteIdentity.Verify(signData, signature) {
+		log.Printf("[DEBUG-3] Invalid signature from remote identity %x", pubKey[:8])
 		return errors.New("invalid signature")
 	}
 
+	log.Printf("[DEBUG-4] Remote identity verified successfully: %x", pubKey[:8])
 	l.remoteIdentity = remoteIdentity
 
 	if l.identifiedCallback != nil {
+		log.Printf("[DEBUG-4] Executing identified callback for remote identity %x", pubKey[:8])
 		l.identifiedCallback(l, remoteIdentity)
 	}
 
@@ -443,27 +455,20 @@ func (l *Link) SendPacket(data []byte) error {
 	defer l.mutex.Unlock()
 
 	if l.status != STATUS_ACTIVE {
+		log.Printf("[DEBUG-3] Cannot send packet: link not active (status: %d)", l.status)
 		return errors.New("link not active")
 	}
 
-	// Compute HMAC first
-	messageHMAC := l.destination.GetIdentity().ComputeHMAC(l.hmacKey, data)
-
-	// Combine data and HMAC
-	authenticatedData := append(data, messageHMAC...)
-
-	// Encrypt authenticated data using session key
-	encryptedData, err := l.encrypt(authenticatedData)
+	log.Printf("[DEBUG-4] Encrypting packet of %d bytes", len(data))
+	encrypted, err := l.encrypt(data)
 	if err != nil {
+		log.Printf("[DEBUG-3] Failed to encrypt packet: %v", err)
 		return err
 	}
 
+	log.Printf("[DEBUG-4] Sending encrypted packet of %d bytes", len(encrypted))
 	l.lastOutbound = time.Now()
 	l.lastDataSent = time.Now()
-
-	if l.packetCallback != nil {
-		l.packetCallback(encryptedData, nil)
-	}
 
 	return nil
 }
@@ -473,25 +478,51 @@ func (l *Link) HandleInbound(data []byte) error {
 	defer l.mutex.Unlock()
 
 	if l.status != STATUS_ACTIVE {
+		log.Printf("[DEBUG-3] Dropping inbound packet: link not active (status: %d)", l.status)
 		return errors.New("link not active")
 	}
+
+	log.Printf("[DEBUG-7] Received encrypted packet of %d bytes", len(data))
 
 	// Decrypt data using session key
 	decryptedData, err := l.decrypt(data)
 	if err != nil {
+		log.Printf("[DEBUG-3] Failed to decrypt packet: %v", err)
 		return err
 	}
 
 	// Split message and HMAC
 	if len(decryptedData) < sha256.Size {
+		log.Printf("[DEBUG-3] Received data too short: %d bytes", len(decryptedData))
 		return errors.New("received data too short")
 	}
 
 	message := decryptedData[:len(decryptedData)-sha256.Size]
 	messageHMAC := decryptedData[len(decryptedData)-sha256.Size:]
 
+	// Log packet details
+	log.Printf("[DEBUG-7] Decrypted packet details:")
+	log.Printf("[DEBUG-7] - Size: %d bytes", len(message))
+	log.Printf("[DEBUG-7] - First 16 bytes: %x", message[:min(16, len(message))])
+	if len(message) > 0 {
+		log.Printf("[DEBUG-7] - Type: 0x%02x", message[0])
+		switch message[0] {
+		case packet.PacketData:
+			log.Printf("[DEBUG-7] - Type: Data Packet")
+		case packet.PacketAnnounce:
+			log.Printf("[DEBUG-7] - Type: Announce Packet")
+		case packet.PacketLinkRequest:
+			log.Printf("[DEBUG-7] - Type: Link Request")
+		case packet.PacketProof:
+			log.Printf("[DEBUG-7] - Type: Proof Request")
+		default:
+			log.Printf("[DEBUG-7] - Type: Unknown (0x%02x)", message[0])
+		}
+	}
+
 	// Verify HMAC
 	if !l.destination.GetIdentity().ValidateHMAC(l.hmacKey, message, messageHMAC) {
+		log.Printf("[DEBUG-3] Invalid HMAC for packet")
 		return errors.New("invalid message authentication code")
 	}
 
@@ -637,23 +668,31 @@ func (l *Link) maintainLink() {
 	ticker := time.NewTicker(time.Second * KEEPALIVE)
 	defer ticker.Stop()
 
-	for {
-		select {
-		case <-ticker.C:
-			if l.status != STATUS_ACTIVE {
-				return
-			}
+	for range ticker.C {
+		if l.status != STATUS_ACTIVE {
+			return
+		}
 
-			if l.InactiveFor() > float64(STALE_TIME) {
+		inactiveTime := l.InactiveFor()
+		if inactiveTime > float64(STALE_TIME) {
+			l.mutex.Lock()
+			l.teardownReason = STATUS_FAILED
+			l.mutex.Unlock()
+			l.Teardown()
+			return
+		}
+
+		noDataTime := l.NoDataFor()
+		if noDataTime > float64(KEEPALIVE) {
+			l.mutex.Lock()
+			err := l.SendPacket([]byte{})
+			if err != nil {
 				l.teardownReason = STATUS_FAILED
+				l.mutex.Unlock()
 				l.Teardown()
 				return
 			}
-
-			if l.NoDataFor() > float64(KEEPALIVE) {
-				// Send keepalive packet
-				l.SendPacket([]byte{})
-			}
+			l.mutex.Unlock()
 		}
 	}
 }
@@ -696,4 +735,12 @@ func (l *Link) HandleProofRequest(packet *packet.Packet) bool {
 	default:
 		return false
 	}
+}
+
+// Helper function for min of two ints
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
