@@ -66,6 +66,7 @@ type Announce struct {
 	handlers        []AnnounceHandler
 	ratchetID       []byte
 	packet          []byte
+	hash            []byte
 }
 
 func New(dest *identity.Identity, appData []byte, pathResponse bool) (*Announce, error) {
@@ -388,5 +389,24 @@ func NewAnnounce(identity *identity.Identity, appData []byte, ratchetID []byte, 
 
 	a.packet = packet
 
+	// Generate hash
+	a.Hash()
+
 	return a, nil
+}
+
+func (a *Announce) Hash() []byte {
+	if a.hash == nil {
+		// Generate hash from announce data
+		h := sha256.New()
+		h.Write(a.destinationHash)
+		h.Write(a.identity.GetPublicKey())
+		h.Write([]byte{a.hops})
+		h.Write(a.appData)
+		if a.ratchetID != nil {
+			h.Write(a.ratchetID)
+		}
+		a.hash = h.Sum(nil)
+	}
+	return a.hash
 }
