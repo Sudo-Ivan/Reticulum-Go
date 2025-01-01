@@ -101,6 +101,8 @@ Packages:
   - [ ] Roaming mode
   - [ ] Boundary mode
 
+- [ ] Hot reloading interfaces
+
 ### Destination System (Testing required)
 - [x] Destination creation
 - [x] Destination types (IN/OUT)
