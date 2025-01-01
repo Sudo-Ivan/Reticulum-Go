@@ -43,6 +43,9 @@ const (
 	PROVE_NONE = 0x00
 	PROVE_ALL  = 0x01
 	PROVE_APP  = 0x02
+
+	WATCHDOG_MIN_SLEEP = 0.025
+	WATCHDOG_INTERVAL  = 0.1
 )
 
 type Link struct {
@@ -82,6 +85,13 @@ type Link struct {
 	proofStrategy             byte
 	proofCallback             func(*packet.Packet) bool
 	trackPhyStats             bool
+
+	watchdogLock         bool
+	watchdogActive       bool
+	establishmentTimeout time.Duration
+	keepalive            time.Duration
+	staleTime            time.Duration
+	initiator            bool
 }
 
 func NewLink(dest *destination.Destination, transport *transport.Transport, establishedCallback func(*Link), closedCallback func(*Link)) *Link {
@@ -97,6 +107,13 @@ func NewLink(dest *destination.Destination, transport *transport.Transport, esta
 		lastDataReceived:    time.Time{},
 		lastDataSent:        time.Time{},
 		pathFinder:          pathfinder.NewPathFinder(),
+
+		watchdogLock:         false,
+		watchdogActive:       false,
+		establishmentTimeout: time.Duration(ESTABLISHMENT_TIMEOUT_PER_HOP * float64(time.Second)),
+		keepalive:            time.Duration(KEEPALIVE * float64(time.Second)),
+		staleTime:            time.Duration(STALE_TIME * float64(time.Second)),
+		initiator:            false,
 	}
 }
 
@@ -802,4 +819,52 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func (l *Link) startWatchdog() {
+	if l.watchdogActive {
+		return
+	}
+
+	l.watchdogActive = true
+	go l.watchdog()
+}
+
+func (l *Link) watchdog() {
+	for l.status != STATUS_CLOSED {
+		l.mutex.Lock()
+		if l.watchdogLock {
+			l.mutex.Unlock()
+			time.Sleep(time.Duration(WATCHDOG_MIN_SLEEP * float64(time.Second)))
+			continue
+		}
+
+		var sleepTime float64 = WATCHDOG_INTERVAL
+
+		switch l.status {
+		case STATUS_ACTIVE:
+			lastActivity := l.lastInbound
+			if l.lastOutbound.After(lastActivity) {
+				lastActivity = l.lastOutbound
+			}
+
+			if time.Since(lastActivity) > l.keepalive {
+				if l.initiator {
+					l.SendPacket([]byte{}) // Keepalive packet
+				}
+
+				if time.Since(lastActivity) > l.staleTime {
+					l.status = STATUS_CLOSED
+					l.teardownReason = STATUS_FAILED
+					if l.closedCallback != nil {
+						l.closedCallback(l)
+					}
+				}
+			}
+		}
+
+		l.mutex.Unlock()
+		time.Sleep(time.Duration(sleepTime * float64(time.Second)))
+	}
+	l.watchdogActive = false
 }

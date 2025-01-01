@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"runtime"
 	"sync"
 	"syscall"
 	"time"
@@ -50,7 +51,6 @@ type TCPClientInterface struct {
 	enabled           bool
 	TxBytes           uint64
 	RxBytes           uint64
-	startTime         time.Time
 	lastTx            time.Time
 	lastRx            time.Time
 }
@@ -103,6 +103,19 @@ func (tc *TCPClientInterface) Start() error {
 		return err
 	}
 	tc.conn = conn
+
+	// Set platform-specific timeouts
+	switch runtime.GOOS {
+	case "linux":
+		if err := tc.setTimeoutsLinux(); err != nil {
+			log.Printf("[DEBUG-2] Failed to set Linux TCP timeouts: %v", err)
+		}
+	case "darwin":
+		if err := tc.setTimeoutsOSX(); err != nil {
+			log.Printf("[DEBUG-2] Failed to set OSX TCP timeouts: %v", err)
+		}
+	}
+
 	tc.Online = true
 	go tc.readLoop()
 	return nil
@@ -126,31 +139,31 @@ func (tc *TCPClientInterface) readLoop() {
 			return
 		}
 
-		// Update RX bytes
-		tc.mutex.Lock()
-		tc.RxBytes += uint64(n)
-		tc.mutex.Unlock()
+		// Update RX bytes for raw received data
+		tc.UpdateStats(uint64(n), true)
 
 		for i := 0; i < n; i++ {
 			b := buffer[i]
 
 			if tc.kissFraming {
 				// KISS framing logic
-				if inFrame && b == KISS_FEND {
-					inFrame = false
-					tc.handlePacket(dataBuffer)
-					dataBuffer = dataBuffer[:0]
-				} else if b == KISS_FEND {
-					inFrame = true
-				} else if inFrame {
+				if b == KISS_FEND {
+					if inFrame && len(dataBuffer) > 0 {
+						tc.handlePacket(dataBuffer)
+						dataBuffer = dataBuffer[:0]
+					}
+					inFrame = !inFrame
+					continue
+				}
+
+				if inFrame {
 					if b == KISS_FESC {
 						escape = true
 					} else {
 						if escape {
 							if b == KISS_TFEND {
 								b = KISS_FEND
-							}
-							if b == KISS_TFESC {
+							} else if b == KISS_TFESC {
 								b = KISS_FESC
 							}
 							escape = false
@@ -160,13 +173,16 @@ func (tc *TCPClientInterface) readLoop() {
 				}
 			} else {
 				// HDLC framing logic
-				if inFrame && b == HDLC_FLAG {
-					inFrame = false
-					tc.handlePacket(dataBuffer)
-					dataBuffer = dataBuffer[:0]
-				} else if b == HDLC_FLAG {
-					inFrame = true
-				} else if inFrame {
+				if b == HDLC_FLAG {
+					if inFrame && len(dataBuffer) > 0 {
+						tc.handlePacket(dataBuffer)
+						dataBuffer = dataBuffer[:0]
+					}
+					inFrame = !inFrame
+					continue
+				}
+
+				if inFrame {
 					if b == HDLC_ESC {
 						escape = true
 					} else {
@@ -241,15 +257,8 @@ func (tc *TCPClientInterface) ProcessOutgoing(data []byte) error {
 		frame = append(frame, HDLC_FLAG)
 	}
 
-	tc.mutex.Lock()
-	tc.TxBytes += uint64(len(frame))
-	lastTx := time.Now()
-	tc.lastTx = lastTx
-	tc.mutex.Unlock()
-
-	log.Printf("[DEBUG-5] Interface %s TX: %d bytes, total: %d, rate: %.2f Kbps",
-		tc.GetName(), len(frame), tc.TxBytes,
-		float64(tc.TxBytes*8)/(time.Since(tc.startTime).Seconds()*1000))
+	// Update TX stats before sending
+	tc.UpdateStats(uint64(len(frame)), false)
 
 	_, err := tc.conn.Write(frame)
 	return err
@@ -478,6 +487,37 @@ func (tc *TCPClientInterface) GetStats() (tx uint64, rx uint64, lastTx time.Time
 	return tc.TxBytes, tc.RxBytes, tc.lastTx, tc.lastRx
 }
 
+func (tc *TCPClientInterface) setTimeoutsLinux() error {
+	tcpConn, ok := tc.conn.(*net.TCPConn)
+	if !ok {
+		return fmt.Errorf("not a TCP connection")
+	}
+
+	if !tc.i2pTunneled {
+		if err := tcpConn.SetKeepAlive(true); err != nil {
+			return err
+		}
+		if err := tcpConn.SetKeepAlivePeriod(time.Duration(TCP_PROBE_INTERVAL) * time.Second); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (tc *TCPClientInterface) setTimeoutsOSX() error {
+	tcpConn, ok := tc.conn.(*net.TCPConn)
+	if !ok {
+		return fmt.Errorf("not a TCP connection")
+	}
+
+	if err := tcpConn.SetKeepAlive(true); err != nil {
+		return err
+	}
+
+	return nil
+}
+
 type TCPServerInterface struct {
 	BaseInterface
 	connections    map[string]net.Conn
@@ -575,7 +615,31 @@ func (ts *TCPServerInterface) Start() error {
 	ts.mutex.Lock()
 	defer ts.mutex.Unlock()
 
+	addr := fmt.Sprintf("%s:%d", ts.bindAddr, ts.bindPort)
+	listener, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("failed to start TCP server: %w", err)
+	}
+
 	ts.Online = true
+
+	// Accept connections in a goroutine
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				if !ts.Online {
+					return // Normal shutdown
+				}
+				log.Printf("[DEBUG-2] Error accepting connection: %v", err)
+				continue
+			}
+
+			// Handle each connection in a separate goroutine
+			go ts.handleConnection(conn)
+		}
+	}()
+
 	return nil
 }
 
@@ -597,4 +661,63 @@ func (ts *TCPServerInterface) GetRxBytes() uint64 {
 	ts.mutex.RLock()
 	defer ts.mutex.RUnlock()
 	return ts.RxBytes
+}
+
+func (ts *TCPServerInterface) handleConnection(conn net.Conn) {
+	addr := conn.RemoteAddr().String()
+	ts.mutex.Lock()
+	ts.connections[addr] = conn
+	ts.mutex.Unlock()
+
+	defer func() {
+		ts.mutex.Lock()
+		delete(ts.connections, addr)
+		ts.mutex.Unlock()
+		conn.Close()
+	}()
+
+	buffer := make([]byte, ts.MTU)
+	for {
+		n, err := conn.Read(buffer)
+		if err != nil {
+			return
+		}
+
+		ts.mutex.Lock()
+		ts.RxBytes += uint64(n)
+		ts.mutex.Unlock()
+
+		if ts.packetCallback != nil {
+			ts.packetCallback(buffer[:n], ts)
+		}
+	}
+}
+
+func (ts *TCPServerInterface) ProcessOutgoing(data []byte) error {
+	ts.mutex.RLock()
+	defer ts.mutex.RUnlock()
+
+	if !ts.Online {
+		return fmt.Errorf("interface offline")
+	}
+
+	var frame []byte
+	if ts.kissFraming {
+		frame = append([]byte{KISS_FEND}, escapeKISS(data)...)
+		frame = append(frame, KISS_FEND)
+	} else {
+		frame = append([]byte{HDLC_FLAG}, escapeHDLC(data)...)
+		frame = append(frame, HDLC_FLAG)
+	}
+
+	ts.TxBytes += uint64(len(frame))
+
+	for _, conn := range ts.connections {
+		if _, err := conn.Write(frame); err != nil {
+			log.Printf("[DEBUG-4] Error writing to connection %s: %v",
+				conn.RemoteAddr(), err)
+		}
+	}
+
+	return nil
 }

@@ -29,14 +29,14 @@ const (
 
 	DEBUG_LEVEL = 4 // Default debug level for interface logging
 
-	// Add more debug levels
-	DEBUG_CRITICAL = 1 // Critical errors
-	DEBUG_ERROR    = 2 // Non-critical errors
-	DEBUG_INFO     = 3 // Important information
-	DEBUG_VERBOSE  = 4 // Detailed information
-	DEBUG_TRACE    = 5 // Very detailed tracing
-	DEBUG_PACKETS  = 6 // Packet-level details
-	DEBUG_ALL      = 7 // Everything
+	// Debug levels
+	DEBUG_CRITICAL = 1
+	DEBUG_ERROR    = 2
+	DEBUG_INFO     = 3
+	DEBUG_VERBOSE  = 4
+	DEBUG_TRACE    = 5
+	DEBUG_PACKETS  = 6
+	DEBUG_ALL      = 7
 )
 
 type Interface interface {
@@ -60,6 +60,7 @@ type Interface interface {
 	Stop() error
 	GetMTU() int
 	GetConn() net.Conn
+	GetBandwidthAvailable() bool
 	common.NetworkInterface
 }
 
@@ -126,8 +127,7 @@ func (i *BaseInterface) ProcessIncoming(data []byte) {
 
 func (i *BaseInterface) ProcessOutgoing(data []byte) error {
 	if !i.Online || i.Detached {
-		log.Printf("[DEBUG-1] Interface %s: Cannot process outgoing packet - interface offline or detached",
-			i.Name)
+		log.Printf("[DEBUG-1] Interface %s: Cannot process outgoing packet - interface offline or detached", i.Name)
 		return fmt.Errorf("interface offline or detached")
 	}
 
@@ -135,8 +135,7 @@ func (i *BaseInterface) ProcessOutgoing(data []byte) error {
 	i.TxBytes += uint64(len(data))
 	i.mutex.Unlock()
 
-	log.Printf("[DEBUG-%d] Interface %s: Processed outgoing packet of %d bytes, total TX: %d",
-		DEBUG_LEVEL, i.Name, len(data), i.TxBytes)
+	log.Printf("[DEBUG-%d] Interface %s: Processed outgoing packet of %d bytes, total TX: %d", DEBUG_LEVEL, i.Name, len(data), i.TxBytes)
 	return nil
 }
 
@@ -146,7 +145,7 @@ func (i *BaseInterface) SendPathRequest(packet []byte) error {
 	}
 
 	frame := make([]byte, 0, len(packet)+1)
-	frame = append(frame, 0x01) // Path request type
+	frame = append(frame, 0x01)
 	frame = append(frame, packet...)
 
 	return i.ProcessOutgoing(frame)
@@ -158,7 +157,7 @@ func (i *BaseInterface) SendLinkPacket(dest []byte, data []byte, timestamp time.
 	}
 
 	frame := make([]byte, 0, len(dest)+len(data)+9)
-	frame = append(frame, 0x02) // Link packet type
+	frame = append(frame, 0x02)
 	frame = append(frame, dest...)
 
 	ts := make([]byte, 8)
@@ -190,8 +189,7 @@ func (i *BaseInterface) Enable() {
 	i.Enabled = true
 	i.Online = true
 
-	log.Printf("[DEBUG-%d] Interface %s: State changed - Enabled: %v->%v, Online: %v->%v",
-		DEBUG_INFO, i.Name, prevState, i.Enabled, !i.Online, i.Online)
+	log.Printf("[DEBUG-%d] Interface %s: State changed - Enabled: %v->%v, Online: %v->%v", DEBUG_INFO, i.Name, prevState, i.Enabled, !i.Online, i.Online)
 }
 
 func (i *BaseInterface) Disable() {
@@ -239,13 +237,11 @@ func (i *BaseInterface) Stop() error {
 }
 
 func (i *BaseInterface) Send(data []byte, address string) error {
-	log.Printf("[DEBUG-%d] Interface %s: Sending %d bytes to %s",
-		DEBUG_LEVEL, i.Name, len(data), address)
+	log.Printf("[DEBUG-%d] Interface %s: Sending %d bytes to %s", DEBUG_LEVEL, i.Name, len(data), address)
 
 	err := i.ProcessOutgoing(data)
 	if err != nil {
-		log.Printf("[DEBUG-1] Interface %s: Failed to send data: %v",
-			i.Name, err)
+		log.Printf("[DEBUG-1] Interface %s: Failed to send data: %v", i.Name, err)
 		return err
 	}
 
@@ -264,21 +260,17 @@ func (i *BaseInterface) GetBandwidthAvailable() bool {
 	now := time.Now()
 	timeSinceLastTx := now.Sub(i.lastTx)
 
-	// If no recent transmission, bandwidth is available
 	if timeSinceLastTx > time.Second {
-		log.Printf("[DEBUG-%d] Interface %s: Bandwidth available (idle for %.2fs)",
-			DEBUG_VERBOSE, i.Name, timeSinceLastTx.Seconds())
+		log.Printf("[DEBUG-%d] Interface %s: Bandwidth available (idle for %.2fs)", DEBUG_VERBOSE, i.Name, timeSinceLastTx.Seconds())
 		return true
 	}
 
-	// Calculate current usage over the last second
 	bytesPerSec := float64(i.TxBytes) / timeSinceLastTx.Seconds()
-	currentUsage := bytesPerSec * 8 // Convert to bits
+	currentUsage := bytesPerSec * 8
 	maxUsage := float64(i.Bitrate) * PROPAGATION_RATE
 
 	available := currentUsage < maxUsage
-	log.Printf("[DEBUG-%d] Interface %s: Bandwidth stats - Current: %.2f bps, Max: %.2f bps, Usage: %.1f%%, Available: %v",
-		DEBUG_VERBOSE, i.Name, currentUsage, maxUsage, (currentUsage/maxUsage)*100, available)
+	log.Printf("[DEBUG-%d] Interface %s: Bandwidth stats - Current: %.2f bps, Max: %.2f bps, Usage: %.1f%%, Available: %v", DEBUG_VERBOSE, i.Name, currentUsage, maxUsage, (currentUsage/maxUsage)*100, available)
 
 	return available
 }
@@ -290,6 +282,5 @@ func (i *BaseInterface) updateBandwidthStats(bytes uint64) {
 	i.TxBytes += bytes
 	i.lastTx = time.Now()
 
-	log.Printf("[DEBUG-%d] Interface %s: Updated bandwidth stats - TX bytes: %d, Last TX: %v",
-		DEBUG_LEVEL, i.Name, i.TxBytes, i.lastTx)
+	log.Printf("[DEBUG-%d] Interface %s: Updated bandwidth stats - TX bytes: %d, Last TX: %v", DEBUG_LEVEL, i.Name, i.TxBytes, i.lastTx)
 }
