@@ -20,6 +20,10 @@ make run
 
 ## To-Do List
 
+1/2/25 Notes: 
+
+Working on fixing announce packet creation/recieving. Right now there is bidirectional communication with the TCP interface and recieving packets.
+
 ### Core Components (In Progress)
 - [x] Basic Configuration System
   - [x] Basic config structure
@@ -54,7 +58,7 @@ make run
   - [x] Packet creation
   - [x] Packet validation
   - [x] Basic proof system
-  - [x] Packet encryption
+  - [x] Packet encryption/decryption
   - [x] Signature verification
   - [x] Announce packet structure
   - [ ] Testing of packet encrypt/decrypt/sign/proof
