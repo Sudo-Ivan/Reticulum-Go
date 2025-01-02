@@ -1,12 +1,13 @@
 package transport
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"log"
-	"math/rand"
+	mathrand "math/rand"
 	"net"
 	"sync"
 	"time"
@@ -119,6 +120,9 @@ type Path struct {
 	Interface common.NetworkInterface
 	HopCount  byte
 }
+
+var randSource = mathrand.NewSource(time.Now().UnixNano())
+var rng = mathrand.New(randSource)
 
 func NewTransport(cfg *common.ReticulumConfig) *Transport {
 	t := &Transport{
@@ -441,7 +445,7 @@ func (t *Transport) HandleAnnounce(data []byte, sourceIface common.NetworkInterf
 	}
 
 	// Add random delay before retransmission (0-2 seconds)
-	delay := time.Duration(rand.Float64() * 2 * float64(time.Second))
+	delay := time.Duration(rng.Float64() * 2 * float64(time.Second))
 	time.Sleep(delay)
 
 	// Check bandwidth allocation for announces
@@ -734,7 +738,7 @@ func (t *Transport) handleAnnouncePacket(data []byte, iface common.NetworkInterf
 	}
 
 	// Add random delay before retransmission (0-2 seconds)
-	delay := time.Duration(rand.Float64() * 2 * float64(time.Second))
+	delay := time.Duration(rng.Float64() * 2 * float64(time.Second))
 	time.Sleep(delay)
 
 	// Check bandwidth allocation for announces
@@ -1035,39 +1039,65 @@ func (l *Link) GetStatus() int {
 	return l.status
 }
 
-func CreateAnnouncePacket(destHash []byte, identity *identity.Identity, appData []byte, hops byte) []byte {
-	packet := make([]byte, 0, 256)
-	
-	// Header byte construction according to RNS spec
+func CreateAnnouncePacket(destHash []byte, identity *identity.Identity, appData []byte, hops byte, config *common.ReticulumConfig) []byte {
+	log.Printf("[DEBUG-7] Creating announce packet")
+
 	headerByte := byte(
-		(0 << 7) |                  // Interface flag (IFAC_NONE)
-		(0 << 6) |                  // Header type (HEADER_TYPE_1) 
-		(0 << 5) |                  // Context flag
-		(1 << 4) |                  // Propagation type (BROADCAST)
-		(0 << 2) |                  // Destination type (SINGLE)
-		PACKET_TYPE_ANNOUNCE,        // Packet type (0x01)
+		(0 << 7) | // Interface flag (IFAC_NONE)
+			(0 << 6) | // Header type (HEADER_TYPE_1)
+			(0 << 5) | // Context flag
+			(1 << 4) | // Propagation type (BROADCAST)
+			(0 << 2) | // Destination type (SINGLE)
+			PACKET_TYPE_ANNOUNCE, // Packet type (0x01)
 	)
-	
-	// Add header and hops
-	packet = append(packet, headerByte, hops)
-	
-	// Add destination hash (16 bytes)
+
+	log.Printf("[DEBUG-7] Created header byte: %02x, hops: %d", headerByte, hops)
+	packet := []byte{headerByte, hops}
+
+	log.Printf("[DEBUG-7] Adding destination hash (16 bytes): %x", destHash)
 	packet = append(packet, destHash...)
-	
-	// Add full public key (64 bytes - both encryption and signing keys)
-	fullPubKey := identity.GetPublicKey() // This should return full 64-byte key
-	packet = append(packet, fullPubKey...)
-	
-	// Add app data with length prefix
-	appDataLen := make([]byte, 2)
-	binary.BigEndian.PutUint16(appDataLen, uint16(len(appData)))
-	packet = append(packet, appDataLen...)
-	packet = append(packet, appData...)
-	
-	// Sign the announce
-	signData := append(destHash, appData...)
+
+	pubKey := identity.GetPublicKey()
+	encKey := pubKey[:32]
+	signKey := pubKey[32:]
+
+	log.Printf("[DEBUG-7] Adding encryption key (32 bytes): %x", encKey)
+	packet = append(packet, encKey...)
+
+	log.Printf("[DEBUG-7] Adding signing key (32 bytes): %x", signKey)
+	packet = append(packet, signKey...)
+
+	nameHash := sha256.Sum256([]byte(fmt.Sprintf("%s.%s", config.AppName, config.AppAspect)))
+	log.Printf("[DEBUG-7] Adding name hash (10 bytes): %x", nameHash[:10])
+	packet = append(packet, nameHash[:10]...)
+
+	randomBytes := make([]byte, 5)
+	rand.Read(randomBytes)
+	timeBytes := make([]byte, 8)
+	binary.BigEndian.PutUint64(timeBytes, uint64(time.Now().Unix()))
+	log.Printf("[DEBUG-7] Adding random hash (10 bytes): %x%x", randomBytes, timeBytes[:5])
+	packet = append(packet, randomBytes...)
+	packet = append(packet, timeBytes[:5]...)
+
+	nameBytes := []byte(fmt.Sprintf("%s.%s", config.AppName, config.AppAspect))
+	appDataMsg := []byte{
+		0x92,                 // msgpack array of 2 elements
+		0xc4,                 // bin 8 format for byte array
+		byte(len(nameBytes)), // length prefix
+	}
+	appDataMsg = append(appDataMsg, nameBytes...)
+	appDataMsg = append(appDataMsg, 0x00)
+
+	signData := append(destHash, appDataMsg...)
 	signature := identity.Sign(signData)
+	log.Printf("[DEBUG-7] Adding signature (64 bytes): %x", signature)
 	packet = append(packet, signature...)
+
+	packet = append(packet, appDataMsg...)
+	log.Printf("[DEBUG-7] Final packet size: %d bytes", len(packet))
+
+	announceHash := sha256.Sum256(packet)
+	log.Printf("[DEBUG-7] Generated announce hash: %x", announceHash)
 
 	return packet
 }

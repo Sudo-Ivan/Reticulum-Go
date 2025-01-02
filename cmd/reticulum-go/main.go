@@ -62,12 +62,19 @@ type Reticulum struct {
 }
 
 type announceRecord struct {
-	// All fields were unused, so entire struct can be removed
 }
 
 func NewReticulum(cfg *common.ReticulumConfig) (*Reticulum, error) {
 	if cfg == nil {
 		cfg = config.DefaultConfig()
+	}
+
+	// Set default app name and aspect if not provided
+	if cfg.AppName == "" {
+		cfg.AppName = "Go Client"
+	}
+	if cfg.AppAspect == "" {
+		cfg.AppAspect = "node"
 	}
 
 	if err := initializeDirectories(); err != nil {
@@ -269,6 +276,7 @@ func main() {
 		[]byte("HELLO WORLD"),
 		nil,
 		false,
+		r.config,
 	)
 	if err != nil {
 		log.Fatalf("Failed to create announce: %v", err)
@@ -424,24 +432,27 @@ func (r *Reticulum) Start() error {
 		debugLog(3, "Interface %s started successfully", iface.GetName())
 	}
 
-	// Create initial announce packet
-	announceData := []byte("Reticulum-Go")
-	announcePacket := transport.CreateAnnouncePacket(
-		r.identity.Hash(),
+	// Create initial announce
+	initialAnnounce, err := announce.NewAnnounce(
 		r.identity,
-		announceData,
-		0,
+		[]byte("Reticulum-Go"),
+		nil,   // ratchetID
+		false, // pathResponse
+		r.config,
 	)
+	if err != nil {
+		return fmt.Errorf("failed to create announce: %v", err)
+	}
 
 	// Wait briefly for interfaces to initialize
 	time.Sleep(2 * time.Second)
 
-	// Send initial announces on all enabled interfaces
+	// Send initial announces
 	for _, iface := range r.interfaces {
 		if netIface, ok := iface.(common.NetworkInterface); ok {
 			if netIface.IsEnabled() && netIface.IsOnline() {
 				debugLog(2, "Sending initial announce on interface %s", netIface.GetName())
-				if err := netIface.Send(announcePacket, ""); err != nil {
+				if err := initialAnnounce.Propagate([]common.NetworkInterface{netIface}); err != nil {
 					debugLog(1, "Failed to send initial announce on interface %s: %v", netIface.GetName(), err)
 				}
 			}
@@ -458,19 +469,24 @@ func (r *Reticulum) Start() error {
 			announceCount++
 			debugLog(3, "Starting periodic announce cycle #%d", announceCount)
 
-			// Create fresh announce packet for each cycle
-			announcePacket := transport.CreateAnnouncePacket(
-				r.identity.Hash(),
+			// Create fresh announce for each cycle
+			periodicAnnounce, err := announce.NewAnnounce(
 				r.identity,
-				announceData,
-				0,
+				[]byte("Reticulum-Go"),
+				nil,   // ratchetID
+				false, // pathResponse
+				r.config,
 			)
+			if err != nil {
+				debugLog(1, "Failed to create periodic announce: %v", err)
+				continue
+			}
 
 			for _, iface := range r.interfaces {
 				if netIface, ok := iface.(common.NetworkInterface); ok {
 					if netIface.IsEnabled() && netIface.IsOnline() {
 						debugLog(2, "Sending periodic announce on interface %s", netIface.GetName())
-						if err := netIface.Send(announcePacket, ""); err != nil {
+						if err := periodicAnnounce.Propagate([]common.NetworkInterface{netIface}); err != nil {
 							debugLog(1, "Failed to send periodic announce on interface %s: %v", netIface.GetName(), err)
 							continue
 						}

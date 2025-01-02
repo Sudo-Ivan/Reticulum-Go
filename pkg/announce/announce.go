@@ -60,6 +60,7 @@ type Announce struct {
 	destinationHash []byte
 	identity        *identity.Identity
 	appData         []byte
+	config          *common.ReticulumConfig
 	hops            uint8
 	timestamp       int64
 	signature       []byte
@@ -71,7 +72,7 @@ type Announce struct {
 	hash            []byte
 }
 
-func New(dest *identity.Identity, appData []byte, pathResponse bool) (*Announce, error) {
+func New(dest *identity.Identity, appData []byte, pathResponse bool, config *common.ReticulumConfig) (*Announce, error) {
 	if dest == nil {
 		return nil, errors.New("destination identity required")
 	}
@@ -80,6 +81,7 @@ func New(dest *identity.Identity, appData []byte, pathResponse bool) (*Announce,
 		mutex:        &sync.RWMutex{},
 		identity:     dest,
 		appData:      appData,
+		config:       config,
 		hops:         0,
 		timestamp:    time.Now().Unix(),
 		pathResponse: pathResponse,
@@ -284,14 +286,14 @@ func CreateHeader(ifacFlag byte, headerType byte, contextFlag byte, propType byt
 
 func (a *Announce) CreatePacket() []byte {
 	log.Printf("[DEBUG-7] Creating announce packet")
-	
+
 	headerByte := byte(
-		(IFAC_NONE) |            
-		(HEADER_TYPE_1 << 6) |   
-		(0 << 5) |              
-		(PROP_TYPE_BROADCAST << 4) | 
-		(DEST_TYPE_SINGLE << 2) | 
-		PACKET_TYPE_ANNOUNCE,      
+		(IFAC_NONE) |
+			(HEADER_TYPE_1 << 6) |
+			(0 << 5) |
+			(PROP_TYPE_BROADCAST << 4) |
+			(DEST_TYPE_SINGLE << 2) |
+			PACKET_TYPE_ANNOUNCE,
 	)
 
 	log.Printf("[DEBUG-7] Created header byte: %02x, hops: %d", headerByte, a.hops)
@@ -301,29 +303,31 @@ func (a *Announce) CreatePacket() []byte {
 	log.Printf("[DEBUG-7] Adding destination hash (16 bytes): %x", a.destinationHash)
 	packet = append(packet, a.destinationHash...)
 
-	// Split public key into encryption and signing keys (32 bytes each)
+	// Get full public key and split into encryption and signing keys
 	pubKey := a.identity.GetPublicKey()
-	encKey := pubKey[:32]
-	signKey := pubKey[32:]
-	
+	encKey := pubKey[:32]  // x25519 public key for encryption
+	signKey := pubKey[32:] // Ed25519 public key for signing
+
+	// Add encryption key (32 bytes)
 	log.Printf("[DEBUG-7] Adding encryption key (32 bytes): %x", encKey)
 	packet = append(packet, encKey...)
-	
+
+	// Add signing key (32 bytes)
 	log.Printf("[DEBUG-7] Adding signing key (32 bytes): %x", signKey)
 	packet = append(packet, signKey...)
 
-	// Add name hash (10 bytes)
-	nameHash := a.identity.GetNameHash()
-	log.Printf("[DEBUG-7] Adding name hash (10 bytes): %x", nameHash)
-	packet = append(packet, nameHash...)
+	// Add name hash (10 bytes) - SHA256 hash of full name truncated to 10 bytes
+	nameHash := sha256.Sum256([]byte(fmt.Sprintf("%s.%s", a.config.AppName, a.config.AppAspect)))
+	log.Printf("[DEBUG-7] Adding name hash (10 bytes): %x", nameHash[:10])
+	packet = append(packet, nameHash[:10]...)
 
 	// Add random hash (5 random + 5 timestamp bytes = 10 bytes)
-	randomHash := make([]byte, 5)
-	rand.Read(randomHash)
+	randomBytes := make([]byte, 5)
+	rand.Read(randomBytes)
 	timeBytes := make([]byte, 8)
 	binary.BigEndian.PutUint64(timeBytes, uint64(time.Now().Unix()))
-	log.Printf("[DEBUG-7] Adding random hash (10 bytes): %x%x", randomHash, timeBytes[:5])
-	packet = append(packet, randomHash...)
+	log.Printf("[DEBUG-7] Adding random hash (10 bytes): %x%x", randomBytes, timeBytes[:5])
+	packet = append(packet, randomBytes...)
 	packet = append(packet, timeBytes[:5]...)
 
 	// Add ratchet if present (32 bytes)
@@ -332,12 +336,23 @@ func (a *Announce) CreatePacket() []byte {
 		packet = append(packet, a.ratchetID...)
 	}
 
-	// Add app data
-	log.Printf("[DEBUG-7] Adding app data (%d bytes): %x", len(a.appData), a.appData)
-	packet = append(packet, a.appData...)
+	// Create msgpack array for app data
+	appData := []byte{
+		0x92, // msgpack array of 2 elements
+		0xc4, // bin 8 format for byte array
+	}
 
-	// Add signature (64 bytes)
-	signData := append(a.destinationHash, a.appData...)
+	// Add name bytes
+	nameBytes := []byte(fmt.Sprintf("%s.%s", a.config.AppName, a.config.AppAspect))
+	appData = append(appData, byte(len(nameBytes))) // length prefix
+	appData = append(appData, nameBytes...)         // name bytes
+	appData = append(appData, 0x00)                 // ticket value = 0
+
+	// Add app data to packet
+	packet = append(packet, appData...)
+
+	// Create signature
+	signData := append(a.destinationHash, appData...)
 	if a.ratchetID != nil {
 		signData = append(signData, a.ratchetID...)
 	}
@@ -346,7 +361,6 @@ func (a *Announce) CreatePacket() []byte {
 	packet = append(packet, signature...)
 
 	log.Printf("[DEBUG-7] Final packet size: %d bytes", len(packet))
-	a.packet = packet
 	return packet
 }
 
@@ -380,13 +394,17 @@ func NewAnnouncePacket(pubKey []byte, appData []byte, announceID []byte) *Announ
 }
 
 // NewAnnounce creates a new announce packet for a destination
-func NewAnnounce(identity *identity.Identity, appData []byte, ratchetID []byte, pathResponse bool) (*Announce, error) {
-	log.Printf("[DEBUG-7] Creating new announce: appDataLen=%d, hasRatchet=%v, pathResponse=%v", 
+func NewAnnounce(identity *identity.Identity, appData []byte, ratchetID []byte, pathResponse bool, config *common.ReticulumConfig) (*Announce, error) {
+	log.Printf("[DEBUG-7] Creating new announce: appDataLen=%d, hasRatchet=%v, pathResponse=%v",
 		len(appData), ratchetID != nil, pathResponse)
 
 	if identity == nil {
 		log.Printf("[DEBUG-7] Error: nil identity provided")
 		return nil, errors.New("identity cannot be nil")
+	}
+
+	if config == nil {
+		return nil, errors.New("config cannot be nil")
 	}
 
 	destHash := identity.Hash()
@@ -401,15 +419,16 @@ func NewAnnounce(identity *identity.Identity, appData []byte, ratchetID []byte, 
 		hops:            0,
 		mutex:           &sync.RWMutex{},
 		handlers:        make([]AnnounceHandler, 0),
+		config:          config,
 	}
 
-	log.Printf("[DEBUG-7] Created announce object: destHash=%x, hops=%d", 
+	log.Printf("[DEBUG-7] Created announce object: destHash=%x, hops=%d",
 		a.destinationHash, a.hops)
 
 	// Create initial packet
 	packet := a.CreatePacket()
 	a.packet = packet
-	
+
 	// Generate hash
 	hash := a.Hash()
 	log.Printf("[DEBUG-7] Generated announce hash: %x", hash)

@@ -50,6 +50,8 @@ type ReticulumConfig struct {
 	PanicOnInterfaceErr bool
 	LogLevel            int
 	Interfaces          map[string]*InterfaceConfig
+	AppName             string
+	AppAspect           string
 }
 
 // NewReticulumConfig creates a new ReticulumConfig with default values
@@ -74,4 +76,18 @@ func (c *ReticulumConfig) Validate() error {
 		return fmt.Errorf("invalid instance control port: %d", c.InstanceControlPort)
 	}
 	return nil
+}
+
+func DefaultConfig() *ReticulumConfig {
+	return &ReticulumConfig{
+		EnableTransport:     true,
+		ShareInstance:       false,
+		SharedInstancePort:  DEFAULT_SHARED_INSTANCE_PORT,
+		InstanceControlPort: DEFAULT_INSTANCE_CONTROL_PORT,
+		PanicOnInterfaceErr: false,
+		LogLevel:            DEFAULT_LOG_LEVEL,
+		Interfaces:          make(map[string]*InterfaceConfig),
+		AppName:             "Go Client",
+		AppAspect:           "node",
+	}
 }
