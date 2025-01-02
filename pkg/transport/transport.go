@@ -70,6 +70,29 @@ const (
 
 	MAX_HOPS         = 128  // Default m value for announce propagation
 	PROPAGATION_RATE = 0.02 // 2% bandwidth cap for announces
+
+	// Announce packet types
+	PACKET_TYPE_ANNOUNCE = 0x01
+	PACKET_TYPE_LINK     = 0x02
+
+	// Announce flags
+	ANNOUNCE_NONE     = 0x00
+	ANNOUNCE_PATH     = 0x01
+	ANNOUNCE_IDENTITY = 0x02
+
+	// Header types
+	HEADER_TYPE_1 = 0x00 // One address field
+	HEADER_TYPE_2 = 0x01 // Two address fields
+
+	// Propagation types
+	PROP_TYPE_BROADCAST = 0x00
+	PROP_TYPE_TRANSPORT = 0x01
+
+	// Destination types
+	DEST_TYPE_SINGLE = 0x00
+	DEST_TYPE_GROUP  = 0x01
+	DEST_TYPE_PLAIN  = 0x02
+	DEST_TYPE_LINK   = 0x03
 )
 
 type PathInfo struct {
@@ -590,27 +613,41 @@ func SendAnnounce(packet []byte) error {
 }
 
 func (t *Transport) HandlePacket(data []byte, iface common.NetworkInterface) {
-	if len(data) < 1 {
+	if len(data) < 2 {
+		log.Printf("[DEBUG-3] Dropping packet: insufficient length (%d bytes)", len(data))
 		return
 	}
 
-	packetType := data[0]
-	log.Printf("[DEBUG-4] Transport handling packet type 0x%02x from interface %s, size: %d bytes",
-		packetType, iface.GetName(), len(data))
+	headerByte := data[0]
+	packetType := headerByte & 0x03
+	headerType := (headerByte & 0x40) >> 6
+	contextFlag := (headerByte & 0x20) >> 5
+	propType := (headerByte & 0x10) >> 4
+	destType := (headerByte & 0x0C) >> 2
 
-	// Update interface stats before processing
+	log.Printf("[DEBUG-4] Packet received - Type: 0x%02x, Header: %d, Context: %d, PropType: %d, DestType: %d, Size: %d bytes",
+		packetType, headerType, contextFlag, propType, destType, len(data))
+	log.Printf("[DEBUG-5] Interface: %s, Raw header: 0x%02x", iface.GetName(), headerByte)
+
 	if tcpIface, ok := iface.(*interfaces.TCPClientInterface); ok {
 		tcpIface.UpdateStats(uint64(len(data)), true)
+		log.Printf("[DEBUG-6] Updated TCP interface stats - RX bytes: %d", len(data))
 	}
 
 	switch packetType {
-	case announce.PACKET_TYPE_ANNOUNCE:
-		t.handleAnnouncePacket(data[1:], iface)
-	case announce.PACKET_TYPE_LINK:
+	case PACKET_TYPE_ANNOUNCE:
+		log.Printf("[DEBUG-4] Processing announce packet")
+		if err := t.handleAnnouncePacket(data, iface); err != nil {
+			log.Printf("[DEBUG-3] Announce handling failed: %v", err)
+		}
+	case PACKET_TYPE_LINK:
+		log.Printf("[DEBUG-4] Processing link packet")
 		t.handleLinkPacket(data[1:], iface)
-	case 0x03: // Path response
+	case 0x03:
+		log.Printf("[DEBUG-4] Processing path response")
 		t.handlePathResponse(data[1:], iface)
-	case 0x04: // Transport packet
+	case 0x00:
+		log.Printf("[DEBUG-4] Processing transport packet")
 		t.handleTransportPacket(data[1:], iface)
 	default:
 		log.Printf("[DEBUG-3] Unknown packet type 0x%02x from %s", packetType, iface.GetName())
@@ -618,18 +655,66 @@ func (t *Transport) HandlePacket(data []byte, iface common.NetworkInterface) {
 }
 
 func (t *Transport) handleAnnouncePacket(data []byte, iface common.NetworkInterface) error {
-	// Validate minimum packet size (1 byte hop count + 32 bytes dest hash + 16 bytes min identity + 1 byte min app data)
-	if len(data) < 50 {
-		return fmt.Errorf("announce packet too small: %d bytes", len(data))
+	if len(data) < 2 {
+		return fmt.Errorf("packet too small for header")
+	}
+
+	// Parse header bytes according to RNS spec
+	headerByte1 := data[0]
+	hopCount := data[1]
+
+	// Extract header fields
+	ifacFlag := (headerByte1 & 0x80) >> 7    // IFAC flag in highest bit
+	headerType := (headerByte1 & 0x40) >> 6  // Header type in next bit
+	contextFlag := (headerByte1 & 0x20) >> 5 // Context flag
+	propType := (headerByte1 & 0x10) >> 4    // Propagation type
+	destType := (headerByte1 & 0x0C) >> 2    // Destination type in next 2 bits
+	packetType := headerByte1 & 0x03         // Packet type in lowest 2 bits
+
+	log.Printf("[DEBUG-5] Announce header: IFAC=%d, headerType=%d, context=%d, propType=%d, destType=%d, packetType=%d",
+		ifacFlag, headerType, contextFlag, propType, destType, packetType)
+
+	// Skip IFAC code if present
+	startIdx := 2
+	if ifacFlag == 1 {
+		startIdx += 1 // For now assume 1 byte IFAC code
+	}
+
+	// Calculate address field size
+	addrSize := 16
+	if headerType == 1 {
+		addrSize = 32 // Two address fields
+	}
+
+	// Validate minimum packet size
+	minSize := startIdx + addrSize + 1 // Header + addresses + context
+	if len(data) < minSize {
+		return fmt.Errorf("packet too small: %d bytes", len(data))
 	}
 
 	// Extract fields
-	hopCount := data[0]
-	destHash := data[1:33]
-	identityBytes := data[33:49]
-	appData := data[49:]
+	addresses := data[startIdx : startIdx+addrSize]
+	context := data[startIdx+addrSize]
+	payload := data[startIdx+addrSize+1:]
 
-	// Check for duplicate announces
+	log.Printf("[DEBUG-6] Addresses: %x", addresses)
+	log.Printf("[DEBUG-7] Context: %02x, Payload length: %d", context, len(payload))
+
+	// Process payload (should contain pubkey + app data)
+	if len(payload) < 32 { // Minimum size for pubkey
+		return fmt.Errorf("payload too small for announce")
+	}
+
+	pubKey := payload[:32]
+	appData := payload[32:]
+
+	// Create identity from public key
+	id := identity.FromPublicKey(pubKey)
+	if id == nil {
+		return fmt.Errorf("invalid identity")
+	}
+
+	// Generate announce hash to check for duplicates
 	announceHash := sha256.Sum256(data)
 	hashStr := string(announceHash[:])
 
@@ -641,12 +726,6 @@ func (t *Transport) handleAnnouncePacket(data []byte, iface common.NetworkInterf
 	}
 	t.seenAnnounces[hashStr] = true
 	t.mutex.Unlock()
-
-	// Validate announce signature and store destination
-	id := identity.FromPublicKey(identityBytes)
-	if id == nil || !id.ValidateAnnounce(data, destHash, appData) {
-		return fmt.Errorf("invalid announce signature")
-	}
 
 	// Don't forward if max hops reached
 	if hopCount >= MAX_HOPS {
@@ -660,43 +739,36 @@ func (t *Transport) handleAnnouncePacket(data []byte, iface common.NetworkInterf
 
 	// Check bandwidth allocation for announces
 	if !t.announceRate.Allow() {
-		log.Printf("[DEBUG-7] Announce rate limit exceeded, dropping")
+		log.Printf("[DEBUG-7] Announce rate limit exceeded, queuing...")
 		return nil
 	}
 
-	// Increment hop count for forwarding
-	forwardData := make([]byte, len(data))
-	copy(forwardData, data)
-	forwardData[0] = hopCount + 1
+	// Increment hop count
+	data[1]++
 
-	// Forward to other interfaces
+	// Broadcast to all other interfaces
 	var lastErr error
 	for name, outIface := range t.interfaces {
 		if outIface == iface || !outIface.IsEnabled() {
 			continue
 		}
 
-		//     Check interface mode restrictions
-		//		if outIface.GetMode() == interfaces.ModeAccessPoint {
-		//			log.Printf("[DEBUG-7] Blocking announce broadcast on %s due to AP mode", name)
-		//			continue
-		//		}
-
 		log.Printf("[DEBUG-7] Forwarding announce on interface %s", name)
-		if err := outIface.Send(forwardData, ""); err != nil {
-			log.Printf("[DEBUG-3] Failed to forward announce on %s: %v", name, err)
+		if err := outIface.Send(data, ""); err != nil {
+			log.Printf("[DEBUG-7] Failed to forward announce on %s: %v", name, err)
 			lastErr = err
 		}
 	}
 
-	// Notify announce handlers
-	t.notifyAnnounceHandlers(destHash, identityBytes, appData)
+	// Notify handlers with first address as destination hash
+	t.notifyAnnounceHandlers(addresses[:16], id, appData)
 
 	return lastErr
 }
 
 func (t *Transport) handleLinkPacket(data []byte, iface common.NetworkInterface) {
-	if len(data) < 40 { // 32 bytes dest + 8 bytes timestamp minimum
+	if len(data) < 40 {
+		log.Printf("[DEBUG-3] Dropping link packet: insufficient length (%d bytes)", len(data))
 		return
 	}
 
@@ -704,28 +776,28 @@ func (t *Transport) handleLinkPacket(data []byte, iface common.NetworkInterface)
 	timestamp := binary.BigEndian.Uint64(data[32:40])
 	payload := data[40:]
 
-	// Check if we're the destination
+	log.Printf("[DEBUG-5] Link packet - Destination: %x, Timestamp: %d, Payload: %d bytes",
+		dest, timestamp, len(payload))
+
 	if t.HasPath(dest) {
 		nextHop := t.NextHop(dest)
 		nextIfaceName := t.NextHopInterface(dest)
+		log.Printf("[DEBUG-6] Found path - Next hop: %x, Interface: %s", nextHop, nextIfaceName)
 
-		// Only forward if received on different interface
 		if nextIfaceName != iface.GetName() {
 			if nextIface, ok := t.interfaces[nextIfaceName]; ok {
+				log.Printf("[DEBUG-7] Forwarding link packet to %s", nextIfaceName)
 				nextIface.Send(data, string(nextHop))
 			}
 		}
 	}
 
-	// Update timing information
 	if link := t.findLink(dest); link != nil {
+		log.Printf("[DEBUG-6] Updating link timing - Last inbound: %v", time.Unix(int64(timestamp), 0))
 		link.lastInbound = time.Unix(int64(timestamp), 0)
 		if link.packetCb != nil {
-			// Create a packet object to pass to callback
-			p := &packet.Packet{
-				Data: payload,
-				// Add other necessary packet fields
-			}
+			log.Printf("[DEBUG-7] Executing packet callback with %d bytes", len(payload))
+			p := &packet.Packet{Data: payload}
 			link.packetCb(payload, p)
 		}
 	}
@@ -769,24 +841,33 @@ func (t *Transport) SendPacket(p *packet.Packet) error {
 	t.mutex.RLock()
 	defer t.mutex.RUnlock()
 
-	// Serialize packet
+	log.Printf("[DEBUG-4] Sending packet - Type: 0x%02x, Header: %d", p.PacketType, p.HeaderType)
+
 	data, err := p.Serialize()
 	if err != nil {
+		log.Printf("[DEBUG-3] Packet serialization failed: %v", err)
 		return fmt.Errorf("failed to serialize packet: %w", err)
 	}
+	log.Printf("[DEBUG-5] Serialized packet size: %d bytes", len(data))
 
-	// Find appropriate interface
 	destHash := p.Addresses[:packet.AddressSize]
+	log.Printf("[DEBUG-6] Destination hash: %x", destHash)
+
 	path, exists := t.paths[string(destHash)]
 	if !exists {
+		log.Printf("[DEBUG-3] No path found for destination %x", destHash)
 		return errors.New("no path to destination")
 	}
 
-	// Send through interface
+	log.Printf("[DEBUG-5] Using path - Interface: %s, Next hop: %x, Hops: %d",
+		path.Interface.GetName(), path.NextHop, path.HopCount)
+
 	if err := path.Interface.Send(data, ""); err != nil {
+		log.Printf("[DEBUG-3] Failed to send packet: %v", err)
 		return fmt.Errorf("failed to send packet: %w", err)
 	}
 
+	log.Printf("[DEBUG-7] Packet sent successfully")
 	return nil
 }
 
@@ -952,4 +1033,41 @@ func (l *Link) GetStatus() int {
 	l.mutex.RLock()
 	defer l.mutex.RUnlock()
 	return l.status
+}
+
+func CreateAnnouncePacket(destHash []byte, identity *identity.Identity, appData []byte, hops byte) []byte {
+	packet := make([]byte, 0, 256)
+	
+	// Header byte construction according to RNS spec
+	headerByte := byte(
+		(0 << 7) |                  // Interface flag (IFAC_NONE)
+		(0 << 6) |                  // Header type (HEADER_TYPE_1) 
+		(0 << 5) |                  // Context flag
+		(1 << 4) |                  // Propagation type (BROADCAST)
+		(0 << 2) |                  // Destination type (SINGLE)
+		PACKET_TYPE_ANNOUNCE,        // Packet type (0x01)
+	)
+	
+	// Add header and hops
+	packet = append(packet, headerByte, hops)
+	
+	// Add destination hash (16 bytes)
+	packet = append(packet, destHash...)
+	
+	// Add full public key (64 bytes - both encryption and signing keys)
+	fullPubKey := identity.GetPublicKey() // This should return full 64-byte key
+	packet = append(packet, fullPubKey...)
+	
+	// Add app data with length prefix
+	appDataLen := make([]byte, 2)
+	binary.BigEndian.PutUint16(appDataLen, uint16(len(appData)))
+	packet = append(packet, appDataLen...)
+	packet = append(packet, appData...)
+	
+	// Sign the announce
+	signData := append(destHash, appData...)
+	signature := identity.Sign(signData)
+	packet = append(packet, signature...)
+
+	return packet
 }
