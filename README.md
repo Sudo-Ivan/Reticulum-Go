@@ -20,9 +20,11 @@ make run
 
 ## To-Do List
 
-1/2/25 Notes: 
+**1/2/25 Notes:** 
 
-Working on fixing announce packet creation/recieving. Right now there is bidirectional communication with the TCP interface and recieving packets.
+Working on fixing announce packet creation/recieving. Right now there is bidirectional communication with the TCP interface and recieving packets. Several more things need to be cleaned up and added like config generation, storing ratches etc..
+
+![status update image](assets/status-update-2jan2025.png)
 
 ### Core Components (In Progress)
 - [x] Basic Configuration System
