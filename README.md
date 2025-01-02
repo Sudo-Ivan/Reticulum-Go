@@ -10,6 +10,11 @@ Packages:
 
 - `golang.org/x/crypto`
 
+# Testing
+
+`make build`
+`make run`
+
 ## To-Do List
 
 ### Core Components (In Progress)
