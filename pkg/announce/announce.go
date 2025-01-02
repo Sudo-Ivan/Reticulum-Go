@@ -1,7 +1,6 @@
 package announce
 
 import (
-	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
@@ -170,73 +169,43 @@ func (a *Announce) HandleAnnounce(data []byte) error {
 
 	log.Printf("[DEBUG-7] Handling announce packet of %d bytes", len(data))
 
-	// Minimum packet size validation (2 header + 16 hash + 32 pubkey + 1 hops + 2 appdata len + 64 sig)
-	if len(data) < 117 {
+	// Minimum packet size validation (header(2) + desthash(16) + enckey(32) + signkey(32) + namehash(10) + 
+	// randomhash(10) + signature(64) + min app data(3))
+	if len(data) < 169 {
 		log.Printf("[DEBUG-7] Invalid announce data length: %d bytes", len(data))
 		return errors.New("invalid announce data length")
 	}
 
-	// Parse header
+	// Parse fields
 	header := data[:2]
 	hopCount := header[1]
-	log.Printf("[DEBUG-7] Announce header: type=%x, hops=%d", header[0], hopCount)
+	destHash := data[2:18]
+	encKey := data[18:50]
+	signKey := data[50:82]
+	nameHash := data[82:92]
+	randomHash := data[92:102]
+	signature := data[102:166]
+	appData := data[166:]
 
+	log.Printf("[DEBUG-7] Announce fields: destHash=%x, encKey=%x, signKey=%x", 
+		destHash, encKey, signKey)
+	log.Printf("[DEBUG-7] Name hash=%x, random hash=%x", nameHash, randomHash)
+
+	// Validate hop count
 	if hopCount > MAX_HOPS {
 		log.Printf("[DEBUG-7] Announce exceeded max hops: %d", hopCount)
 		return errors.New("announce exceeded maximum hop count")
 	}
 
-	// Extract fields with detailed logging
-	destHash := data[2:18]
-	publicKey := data[18:50]
-	hopsByte := data[50]
-
-	log.Printf("[DEBUG-7] Announce fields: destHash=%x, pubKeyLen=%d, hops=%d",
-		destHash, len(publicKey), hopsByte)
-
-	// Validate hop count matches header
-	if hopsByte != hopCount {
-		return errors.New("inconsistent hop count in packet")
-	}
-
-	// Extract app data length and content
-	appDataLen := binary.BigEndian.Uint16(data[51:53])
-	appDataEnd := 53 + int(appDataLen)
-
-	if appDataEnd > len(data) {
-		return errors.New("invalid app data length")
-	}
-
-	appData := data[53:appDataEnd]
-
-	// Handle ratchet ID if present
-	var ratchetID []byte
-	signatureStart := appDataEnd
-
-	remainingBytes := len(data) - appDataEnd
-	if remainingBytes > ed25519.SignatureSize {
-		ratchetID = data[appDataEnd : len(data)-ed25519.SignatureSize]
-		signatureStart = len(data) - ed25519.SignatureSize
-	}
-
-	if signatureStart+ed25519.SignatureSize > len(data) {
-		return errors.New("invalid signature position")
-	}
-
-	signature := data[signatureStart:]
-
-	// Create announced identity
-	announcedIdentity := identity.FromPublicKey(publicKey)
+	// Create announced identity from public keys
+	pubKey := append(encKey, signKey...)
+	announcedIdentity := identity.FromPublicKey(pubKey)
 	if announcedIdentity == nil {
 		return errors.New("invalid identity public key")
 	}
 
 	// Verify signature
 	signData := append(destHash, appData...)
-	if ratchetID != nil {
-		signData = append(signData, ratchetID...)
-	}
-
 	if !announcedIdentity.Verify(signData, signature) {
 		return errors.New("invalid announce signature")
 	}
@@ -287,13 +256,14 @@ func CreateHeader(ifacFlag byte, headerType byte, contextFlag byte, propType byt
 func (a *Announce) CreatePacket() []byte {
 	log.Printf("[DEBUG-7] Creating announce packet")
 
+	// Create header byte
 	headerByte := byte(
-		(IFAC_NONE) |
-			(HEADER_TYPE_1 << 6) |
-			(0 << 5) |
-			(PROP_TYPE_BROADCAST << 4) |
-			(DEST_TYPE_SINGLE << 2) |
-			PACKET_TYPE_ANNOUNCE,
+		(IFAC_NONE) |                  // No interface auth
+		(HEADER_TYPE_1 << 6) |         // Single address field
+		(0 << 5) |                     // No context
+		(PROP_TYPE_BROADCAST << 4) |    // Broadcast propagation
+		(DEST_TYPE_SINGLE << 2) |      // Single destination
+		PACKET_TYPE_ANNOUNCE,          // Announce packet type
 	)
 
 	log.Printf("[DEBUG-7] Created header byte: %02x, hops: %d", headerByte, a.hops)
@@ -316,12 +286,12 @@ func (a *Announce) CreatePacket() []byte {
 	log.Printf("[DEBUG-7] Adding signing key (32 bytes): %x", signKey)
 	packet = append(packet, signKey...)
 
-	// Add name hash (10 bytes) - SHA256 hash of full name truncated to 10 bytes
+	// Add name hash (10 bytes)
 	nameHash := sha256.Sum256([]byte(fmt.Sprintf("%s.%s", a.config.AppName, a.config.AppAspect)))
 	log.Printf("[DEBUG-7] Adding name hash (10 bytes): %x", nameHash[:10])
 	packet = append(packet, nameHash[:10]...)
 
-	// Add random hash (5 random + 5 timestamp bytes = 10 bytes)
+	// Add random hash (10 bytes: 5 random + 5 timestamp)
 	randomBytes := make([]byte, 5)
 	rand.Read(randomBytes)
 	timeBytes := make([]byte, 8)
@@ -330,7 +300,7 @@ func (a *Announce) CreatePacket() []byte {
 	packet = append(packet, randomBytes...)
 	packet = append(packet, timeBytes[:5]...)
 
-	// Add ratchet if present (32 bytes)
+	// Add ratchet ID if present (32 bytes)
 	if a.ratchetID != nil {
 		log.Printf("[DEBUG-7] Adding ratchet ID (32 bytes): %x", a.ratchetID)
 		packet = append(packet, a.ratchetID...)
@@ -338,20 +308,17 @@ func (a *Announce) CreatePacket() []byte {
 
 	// Create msgpack array for app data
 	appData := []byte{
-		0x92, // msgpack array of 2 elements
-		0xc4, // bin 8 format for byte array
+		0x92,  // msgpack array of 2 elements
+		0xc4,  // bin 8 format for byte array
 	}
-
+	
 	// Add name bytes
 	nameBytes := []byte(fmt.Sprintf("%s.%s", a.config.AppName, a.config.AppAspect))
 	appData = append(appData, byte(len(nameBytes))) // length prefix
 	appData = append(appData, nameBytes...)         // name bytes
 	appData = append(appData, 0x00)                 // ticket value = 0
 
-	// Add app data to packet
-	packet = append(packet, appData...)
-
-	// Create signature
+	// Create signature over destination hash and app data
 	signData := append(a.destinationHash, appData...)
 	if a.ratchetID != nil {
 		signData = append(signData, a.ratchetID...)
@@ -359,6 +326,9 @@ func (a *Announce) CreatePacket() []byte {
 	signature := a.identity.Sign(signData)
 	log.Printf("[DEBUG-7] Adding signature (64 bytes): %x", signature)
 	packet = append(packet, signature...)
+
+	// Finally add the app data
+	packet = append(packet, appData...)
 
 	log.Printf("[DEBUG-7] Final packet size: %d bytes", len(packet))
 	return packet
