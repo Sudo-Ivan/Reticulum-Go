@@ -12,8 +12,11 @@ Packages:
 
 # Testing
 
-`make build`
-`make run`
+```
+make install
+make build
+make run
+```
 
 ## To-Do List
 
