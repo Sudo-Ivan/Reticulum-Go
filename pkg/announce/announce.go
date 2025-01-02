@@ -2,6 +2,7 @@ package announce
 
 import (
 	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
@@ -111,23 +112,34 @@ func (a *Announce) Propagate(interfaces []common.NetworkInterface) error {
 	a.mutex.RLock()
 	defer a.mutex.RUnlock()
 
-	// Use cached packet if available, otherwise create new one
+	log.Printf("[DEBUG-7] Propagating announce across %d interfaces", len(interfaces))
+
 	var packet []byte
 	if a.packet != nil {
+		log.Printf("[DEBUG-7] Using cached packet (%d bytes)", len(a.packet))
 		packet = a.packet
 	} else {
+		log.Printf("[DEBUG-7] Creating new packet")
 		packet = a.CreatePacket()
 		a.packet = packet
 	}
 
 	for _, iface := range interfaces {
-		if !iface.IsEnabled() || !iface.GetBandwidthAvailable() {
+		if !iface.IsEnabled() {
+			log.Printf("[DEBUG-7] Skipping disabled interface: %s", iface.GetName())
+			continue
+		}
+		if !iface.GetBandwidthAvailable() {
+			log.Printf("[DEBUG-7] Skipping interface with insufficient bandwidth: %s", iface.GetName())
 			continue
 		}
 
+		log.Printf("[DEBUG-7] Sending announce on interface %s", iface.GetName())
 		if err := iface.Send(packet, ""); err != nil {
+			log.Printf("[DEBUG-7] Failed to send on interface %s: %v", iface.GetName(), err)
 			return fmt.Errorf("failed to propagate on interface %s: %w", iface.GetName(), err)
 		}
+		log.Printf("[DEBUG-7] Successfully sent announce on interface %s", iface.GetName())
 	}
 
 	return nil
@@ -271,48 +283,70 @@ func CreateHeader(ifacFlag byte, headerType byte, contextFlag byte, propType byt
 }
 
 func (a *Announce) CreatePacket() []byte {
-	packet := make([]byte, 0)
-
-	// Create header according to spec
-	header := CreateHeader(
-		IFAC_NONE,            // No interface auth
-		HEADER_TYPE_1,        // One address field
-		0x00,                 // Context flag unset
-		PROP_TYPE_BROADCAST,  // Broadcast propagation
-		DEST_TYPE_SINGLE,     // Single destination
-		PACKET_TYPE_ANNOUNCE, // Announce packet type
-		a.hops,               // Current hop count
+	log.Printf("[DEBUG-7] Creating announce packet")
+	
+	headerByte := byte(
+		(IFAC_NONE) |            
+		(HEADER_TYPE_1 << 6) |   
+		(0 << 5) |              
+		(PROP_TYPE_BROADCAST << 4) | 
+		(DEST_TYPE_SINGLE << 2) | 
+		PACKET_TYPE_ANNOUNCE,      
 	)
-	packet = append(packet, header...)
+
+	log.Printf("[DEBUG-7] Created header byte: %02x, hops: %d", headerByte, a.hops)
+	packet := []byte{headerByte, a.hops}
 
 	// Add destination hash (16 bytes)
+	log.Printf("[DEBUG-7] Adding destination hash (16 bytes): %x", a.destinationHash)
 	packet = append(packet, a.destinationHash...)
 
-	// Add public key
-	packet = append(packet, a.identity.GetPublicKey()...)
+	// Split public key into encryption and signing keys (32 bytes each)
+	pubKey := a.identity.GetPublicKey()
+	encKey := pubKey[:32]
+	signKey := pubKey[32:]
+	
+	log.Printf("[DEBUG-7] Adding encryption key (32 bytes): %x", encKey)
+	packet = append(packet, encKey...)
+	
+	log.Printf("[DEBUG-7] Adding signing key (32 bytes): %x", signKey)
+	packet = append(packet, signKey...)
 
-	// Add hop count byte
-	packet = append(packet, byte(a.hops))
+	// Add name hash (10 bytes)
+	nameHash := a.identity.GetNameHash()
+	log.Printf("[DEBUG-7] Adding name hash (10 bytes): %x", nameHash)
+	packet = append(packet, nameHash...)
 
-	// Add app data with length prefix
-	appDataLen := make([]byte, 2)
-	binary.BigEndian.PutUint16(appDataLen, uint16(len(a.appData)))
-	packet = append(packet, appDataLen...)
-	packet = append(packet, a.appData...)
+	// Add random hash (5 random + 5 timestamp bytes = 10 bytes)
+	randomHash := make([]byte, 5)
+	rand.Read(randomHash)
+	timeBytes := make([]byte, 8)
+	binary.BigEndian.PutUint64(timeBytes, uint64(time.Now().Unix()))
+	log.Printf("[DEBUG-7] Adding random hash (10 bytes): %x%x", randomHash, timeBytes[:5])
+	packet = append(packet, randomHash...)
+	packet = append(packet, timeBytes[:5]...)
 
-	// Add ratchet ID if present
+	// Add ratchet if present (32 bytes)
 	if a.ratchetID != nil {
+		log.Printf("[DEBUG-7] Adding ratchet ID (32 bytes): %x", a.ratchetID)
 		packet = append(packet, a.ratchetID...)
 	}
 
-	// Add signature
+	// Add app data
+	log.Printf("[DEBUG-7] Adding app data (%d bytes): %x", len(a.appData), a.appData)
+	packet = append(packet, a.appData...)
+
+	// Add signature (64 bytes)
 	signData := append(a.destinationHash, a.appData...)
 	if a.ratchetID != nil {
 		signData = append(signData, a.ratchetID...)
 	}
 	signature := a.identity.Sign(signData)
+	log.Printf("[DEBUG-7] Adding signature (64 bytes): %x", signature)
 	packet = append(packet, signature...)
 
+	log.Printf("[DEBUG-7] Final packet size: %d bytes", len(packet))
+	a.packet = packet
 	return packet
 }
 
@@ -347,60 +381,38 @@ func NewAnnouncePacket(pubKey []byte, appData []byte, announceID []byte) *Announ
 
 // NewAnnounce creates a new announce packet for a destination
 func NewAnnounce(identity *identity.Identity, appData []byte, ratchetID []byte, pathResponse bool) (*Announce, error) {
+	log.Printf("[DEBUG-7] Creating new announce: appDataLen=%d, hasRatchet=%v, pathResponse=%v", 
+		len(appData), ratchetID != nil, pathResponse)
+
 	if identity == nil {
+		log.Printf("[DEBUG-7] Error: nil identity provided")
 		return nil, errors.New("identity cannot be nil")
 	}
+
+	destHash := identity.Hash()
+	log.Printf("[DEBUG-7] Generated destination hash: %x", destHash)
 
 	a := &Announce{
 		identity:        identity,
 		appData:         appData,
 		ratchetID:       ratchetID,
 		pathResponse:    pathResponse,
-		destinationHash: identity.Hash(),
+		destinationHash: destHash,
 		hops:            0,
 		mutex:           &sync.RWMutex{},
 		handlers:        make([]AnnounceHandler, 0),
 	}
 
-	// Create announce packet
-	packet := make([]byte, 0)
+	log.Printf("[DEBUG-7] Created announce object: destHash=%x, hops=%d", 
+		a.destinationHash, a.hops)
 
-	// Add header (2 bytes)
-	packet = append(packet, PACKET_TYPE_ANNOUNCE)
-	packet = append(packet, byte(a.hops))
-
-	// Add destination hash (16 bytes)
-	packet = append(packet, a.destinationHash...)
-
-	// Add public key (32 bytes)
-	packet = append(packet, identity.GetPublicKey()...)
-
-	// Add hop count (1 byte)
-	packet = append(packet, byte(a.hops))
-
-	// Add app data with length prefix (2 bytes + data)
-	appDataLen := make([]byte, 2)
-	binary.BigEndian.PutUint16(appDataLen, uint16(len(appData)))
-	packet = append(packet, appDataLen...)
-	packet = append(packet, appData...)
-
-	// Add ratchet ID if present
-	if ratchetID != nil {
-		packet = append(packet, ratchetID...)
-	}
-
-	// Add signature
-	signData := append(a.destinationHash, appData...)
-	if ratchetID != nil {
-		signData = append(signData, ratchetID...)
-	}
-	signature := identity.Sign(signData)
-	packet = append(packet, signature...)
-
+	// Create initial packet
+	packet := a.CreatePacket()
 	a.packet = packet
-
+	
 	// Generate hash
-	a.Hash()
+	hash := a.Hash()
+	log.Printf("[DEBUG-7] Generated announce hash: %x", hash)
 
 	return a, nil
 }

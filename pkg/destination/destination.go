@@ -31,6 +31,15 @@ const (
 
 	RATCHET_COUNT    = 512  // Default number of retained ratchet keys
 	RATCHET_INTERVAL = 1800 // Minimum interval between ratchet rotations in seconds
+
+	// Debug levels
+	DEBUG_CRITICAL = 1 // Critical errors
+	DEBUG_ERROR    = 2 // Non-critical errors
+	DEBUG_INFO     = 3 // Important information
+	DEBUG_VERBOSE  = 4 // Detailed information
+	DEBUG_TRACE    = 5 // Very detailed tracing
+	DEBUG_PACKETS  = 6 // Packet-level details
+	DEBUG_ALL      = 7 // Everything
 )
 
 type PacketCallback = common.PacketCallback
@@ -69,15 +78,17 @@ type Destination struct {
 	mutex          sync.RWMutex
 
 	requestHandlers map[string]*RequestHandler
-	callbacks       struct {
-		packetReceived  common.PacketCallback
-		proofRequested  common.ProofRequestedCallback
-		linkEstablished common.LinkEstablishedCallback
-	}
+}
+
+func debugLog(level int, format string, v ...interface{}) {
+	log.Printf("[DEBUG-%d] %s", level, fmt.Sprintf(format, v...))
 }
 
 func New(id *identity.Identity, direction byte, destType byte, appName string, aspects ...string) (*Destination, error) {
+	debugLog(DEBUG_INFO, "Creating new destination: app=%s type=%d direction=%d", appName, destType, direction)
+
 	if id == nil {
+		debugLog(DEBUG_ERROR, "Cannot create destination: identity is nil")
 		return nil, errors.New("identity cannot be nil")
 	}
 
@@ -96,18 +107,27 @@ func New(id *identity.Identity, direction byte, destType byte, appName string, a
 
 	// Generate destination hash
 	d.hashValue = d.calculateHash()
+	debugLog(DEBUG_VERBOSE, "Created destination with hash: %x", d.hashValue)
 
 	return d, nil
 }
 
 func (d *Destination) calculateHash() []byte {
+	debugLog(DEBUG_TRACE, "Calculating hash for destination %s", d.ExpandName())
+
 	nameHash := sha256.Sum256([]byte(d.ExpandName()))
 	identityHash := sha256.Sum256(d.identity.GetPublicKey())
+
+	debugLog(DEBUG_ALL, "Name hash: %x", nameHash)
+	debugLog(DEBUG_ALL, "Identity hash: %x", identityHash)
 
 	combined := append(nameHash[:], identityHash[:]...)
 	finalHash := sha256.Sum256(combined)
 
-	return finalHash[:16] // Truncated to 128 bits
+	truncated := finalHash[:16]
+	debugLog(DEBUG_VERBOSE, "Calculated destination hash: %x", truncated)
+
+	return truncated
 }
 
 func (d *Destination) ExpandName() string {
@@ -131,52 +151,31 @@ func (d *Destination) Announce(appData []byte) error {
 	}
 
 	// Create announce packet
-	packet := make([]byte, 0)
+	packet := make([]byte, 0, 256) // Pre-allocate reasonable size
 
-	// Add destination hash
+	// Add packet type and header
+	packet = append(packet, 0x01) // PACKET_TYPE_ANNOUNCE
+	packet = append(packet, 0x00) // Initial hop count
+
+	// Add destination hash (16 bytes)
 	packet = append(packet, d.hashValue...)
 	log.Printf("[DEBUG-4] Added destination hash %x to announce", d.hashValue[:8])
 
-	// Add identity public key
+	// Add identity public key (32 bytes)
 	pubKey := d.identity.GetPublicKey()
 	packet = append(packet, pubKey...)
 	log.Printf("[DEBUG-4] Added public key %x to announce", pubKey[:8])
 
-	// Add flags byte
-	flags := byte(0)
-	if d.acceptsLinks {
-		flags |= 0x01
-	}
-	if d.ratchetsEnabled {
-		flags |= 0x02
-	}
-	packet = append(packet, flags)
-	log.Printf("[DEBUG-4] Added flags byte 0x%02x to announce", flags)
-
-	// Add proof strategy
-	packet = append(packet, d.proofStrategy)
-	log.Printf("[DEBUG-4] Added proof strategy 0x%02x to announce", d.proofStrategy)
-
-	// Add app data
-	if appData != nil {
-		appDataLen := uint16(len(appData))
-		lenBytes := make([]byte, 2)
-		binary.BigEndian.PutUint16(lenBytes, appDataLen)
-		packet = append(packet, lenBytes...)
-		packet = append(packet, appData...)
-		log.Printf("[DEBUG-4] Added %d bytes of app data to announce", appDataLen)
-	} else {
-		packet = append(packet, 0x00, 0x00)
-		log.Printf("[DEBUG-4] Added empty app data to announce")
-	}
+	// Add app data with length prefix
+	appDataLen := make([]byte, 2)
+	binary.BigEndian.PutUint16(appDataLen, uint16(len(appData)))
+	packet = append(packet, appDataLen...)
+	packet = append(packet, appData...)
+	log.Printf("[DEBUG-4] Added %d bytes of app data to announce", len(appData))
 
 	// Add ratchet data if enabled
 	if d.ratchetsEnabled {
 		log.Printf("[DEBUG-4] Adding ratchet data to announce")
-		intervalBytes := make([]byte, 4)
-		binary.BigEndian.PutUint32(intervalBytes, uint32(d.ratchetInterval))
-		packet = append(packet, intervalBytes...)
-
 		ratchetKey := d.identity.GetCurrentRatchetKey()
 		if ratchetKey == nil {
 			log.Printf("[DEBUG-3] Failed to get current ratchet key")
@@ -186,16 +185,16 @@ func (d *Destination) Announce(appData []byte) error {
 		log.Printf("[DEBUG-4] Added ratchet key %x to announce", ratchetKey[:8])
 	}
 
-	// Sign the announce packet
-	signature, err := d.Sign(packet)
-	if err != nil {
-		log.Printf("[DEBUG-3] Failed to sign announce packet: %v", err)
-		return fmt.Errorf("failed to sign announce packet: %w", err)
+	// Sign the announce packet (64 bytes)
+	signData := append(d.hashValue, appData...)
+	if d.ratchetsEnabled {
+		signData = append(signData, d.identity.GetCurrentRatchetKey()...)
 	}
+	signature := d.identity.Sign(signData)
 	packet = append(packet, signature...)
 	log.Printf("[DEBUG-4] Added signature to announce packet (total size: %d bytes)", len(packet))
 
-	// Send announce packet
+	// Send announce packet through transport
 	log.Printf("[DEBUG-4] Sending announce packet through transport layer")
 	return transport.SendAnnounce(packet)
 }
@@ -288,7 +287,7 @@ func (d *Destination) RegisterRequestHandler(path string, responseGen func(strin
 		return errors.New("invalid allow mode")
 	}
 
-	if allow == ALLOW_LIST && (allowedList == nil || len(allowedList) == 0) {
+	if allow == ALLOW_LIST && len(allowedList) == 0 {
 		return errors.New("allowed list required for ALLOW_LIST mode")
 	}
 

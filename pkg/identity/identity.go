@@ -152,10 +152,11 @@ func New() (*Identity, error) {
 }
 
 func (i *Identity) GetPublicKey() []byte {
-	combined := make([]byte, KEYSIZE/8)
-	copy(combined[:KEYSIZE/16], i.publicKey)
-	copy(combined[KEYSIZE/16:], i.verificationKey)
-	return combined
+	// Combine encryption and signing public keys in correct order
+	fullKey := make([]byte, 64)
+	copy(fullKey[:32], i.publicKey)       // First 32 bytes: X25519 encryption key
+	copy(fullKey[32:], i.verificationKey) // Last 32 bytes: Ed25519 verification key
+	return fullKey
 }
 
 func (i *Identity) GetPrivateKey() []byte {
@@ -838,7 +839,23 @@ func (i *Identity) ValidateAnnounce(data []byte, destHash []byte, appData []byte
 
 	signatureStart := len(data) - ed25519.SignatureSize
 	signature := data[signatureStart:]
-	signedData := append(destHash, appData...)
+	signedData := append(destHash, i.GetPublicKey()...)
+	signedData = append(signedData, appData...)
 
 	return ed25519.Verify(i.verificationKey, signedData, signature)
+}
+
+// GetNameHash returns a 10-byte hash derived from the identity's public key
+func (i *Identity) GetNameHash() []byte {
+	if i == nil || i.publicKey == nil {
+		return nil
+	}
+
+	// Generate hash from combined public key
+	h := sha256.New()
+	h.Write(i.GetPublicKey())
+	fullHash := h.Sum(nil)
+
+	// Return first 10 bytes (NAME_HASH_LENGTH/8)
+	return fullHash[:NAME_HASH_LENGTH/8]
 }

@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/Sudo-Ivan/reticulum-go/pkg/identity"
@@ -110,24 +111,29 @@ func (p *Packet) Pack() error {
 		return nil
 	}
 
-	flags := (p.HeaderType << 6) | (p.ContextFlag << 5) |
-		(p.TransportType << 4) | (p.DestinationType << 2) | p.PacketType
+	log.Printf("[DEBUG-6] Packing packet: type=%d, header=%d", p.PacketType, p.HeaderType)
 
-	header := make([]byte, 0)
-	header = append(header, flags)
-	header = append(header, p.Hops)
+	// Create header byte
+	flags := byte(p.HeaderType<<6) | byte(p.ContextFlag<<5) |
+		byte(p.TransportType<<4) | byte(p.DestinationType<<2) | byte(p.PacketType)
 
-	if p.HeaderType == HeaderType2 && p.TransportID != nil {
+	header := []byte{flags, p.Hops}
+	log.Printf("[DEBUG-5] Created packet header: flags=%08b, hops=%d", flags, p.Hops)
+
+	if p.HeaderType == HeaderType2 {
+		if p.TransportID == nil {
+			return errors.New("transport ID required for header type 2")
+		}
 		header = append(header, p.TransportID...)
-		header = append(header, p.DestinationHash...)
-	} else if p.HeaderType == HeaderType1 {
-		header = append(header, p.DestinationHash...)
-	} else {
-		return errors.New("invalid header configuration")
+		log.Printf("[DEBUG-7] Added transport ID to header: %x", p.TransportID)
 	}
 
+	header = append(header, p.DestinationHash...)
 	header = append(header, p.Context)
+	log.Printf("[DEBUG-6] Final header length: %d bytes", len(header))
+
 	p.Raw = append(header, p.Data...)
+	log.Printf("[DEBUG-5] Final packet size: %d bytes", len(p.Raw))
 
 	if len(p.Raw) > MTU {
 		return errors.New("packet size exceeds MTU")
@@ -135,6 +141,7 @@ func (p *Packet) Pack() error {
 
 	p.Packed = true
 	p.updateHash()
+	log.Printf("[DEBUG-7] Packet hash: %x", p.PacketHash)
 	return nil
 }
 
@@ -210,19 +217,25 @@ func (p *Packet) Serialize() ([]byte, error) {
 }
 
 func NewAnnouncePacket(destHash []byte, identity *identity.Identity, appData []byte, transportID []byte) (*Packet, error) {
+	log.Printf("[DEBUG-7] Creating new announce packet: destHash=%x, appData=%s", destHash, string(appData))
+
 	// Create combined public key
 	pubKey := identity.GetPublicKey()
+	log.Printf("[DEBUG-6] Using public key: %x", pubKey)
 
 	// Create signed data
 	signedData := append(destHash, pubKey...)
 	signedData = append(signedData, appData...)
+	log.Printf("[DEBUG-5] Created signed data (%d bytes)", len(signedData))
 
 	// Sign the data
 	signature := identity.Sign(signedData)
+	log.Printf("[DEBUG-6] Generated signature: %x", signature)
 
 	// Combine all data
 	data := append(pubKey, appData...)
 	data = append(data, signature...)
+	log.Printf("[DEBUG-5] Combined packet data (%d bytes)", len(data))
 
 	p := &Packet{
 		HeaderType:      HeaderType2,
@@ -232,5 +245,6 @@ func NewAnnouncePacket(destHash []byte, identity *identity.Identity, appData []b
 		Data:            data,
 	}
 
+	log.Printf("[DEBUG-4] Created announce packet: type=%d, header=%d", p.PacketType, p.HeaderType)
 	return p, nil
 }

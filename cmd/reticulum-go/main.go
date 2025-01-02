@@ -4,7 +4,6 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"math/rand"
 	"os"
 	"os/signal"
 	"sync"
@@ -16,6 +15,7 @@ import (
 	"github.com/Sudo-Ivan/reticulum-go/pkg/buffer"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/channel"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/common"
+	"github.com/Sudo-Ivan/reticulum-go/pkg/destination"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/identity"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/interfaces"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/packet"
@@ -44,6 +44,8 @@ const (
 	DEBUG_TRACE           = 5    // Very detailed tracing
 	DEBUG_PACKETS         = 6    // Packet-level details
 	DEBUG_ALL             = 7    // Everything including identity operations
+	APP_NAME              = "Go Client"
+	APP_ASPECT            = "node"
 )
 
 type Reticulum struct {
@@ -52,18 +54,15 @@ type Reticulum struct {
 	interfaces        []interfaces.Interface
 	channels          map[string]*channel.Channel
 	buffers           map[string]*buffer.Buffer
-	announceHandlers  map[string][]announce.AnnounceHandler
 	pathRequests      map[string]*common.PathRequest
 	announceHistory   map[string]announceRecord
 	announceHistoryMu sync.RWMutex
 	identity          *identity.Identity
+	destination       *destination.Destination
 }
 
 type announceRecord struct {
-	lastSeen   time.Time
-	seenCount  int
-	violations int
-	interfaces map[string]bool
+	// All fields were unused, so entire struct can be removed
 }
 
 func NewReticulum(cfg *common.ReticulumConfig) (*Reticulum, error) {
@@ -85,16 +84,36 @@ func NewReticulum(cfg *common.ReticulumConfig) (*Reticulum, error) {
 	}
 	debugLog(2, "Created new identity: %x", identity.Hash())
 
+	// Create destination
+	debugLog(DEBUG_INFO, "Creating destination...")
+	dest, err := destination.New(
+		identity,
+		destination.IN,
+		destination.SINGLE,
+		APP_NAME,
+		APP_ASPECT,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create destination: %v", err)
+	}
+	debugLog(DEBUG_INFO, "Created destination with hash: %x", dest.GetHash())
+
+	// Enable destination features
+	dest.AcceptsLinks(true)
+	dest.EnableRatchets("") // Empty string for default path
+	dest.SetProofStrategy(destination.PROVE_APP)
+	debugLog(DEBUG_VERBOSE, "Configured destination features")
+
 	r := &Reticulum{
-		config:           cfg,
-		transport:        t,
-		interfaces:       make([]interfaces.Interface, 0),
-		channels:         make(map[string]*channel.Channel),
-		buffers:          make(map[string]*buffer.Buffer),
-		announceHandlers: make(map[string][]announce.AnnounceHandler),
-		pathRequests:     make(map[string]*common.PathRequest),
-		announceHistory:  make(map[string]announceRecord),
-		identity:         identity,
+		config:          cfg,
+		transport:       t,
+		interfaces:      make([]interfaces.Interface, 0),
+		channels:        make(map[string]*channel.Channel),
+		buffers:         make(map[string]*buffer.Buffer),
+		pathRequests:    make(map[string]*common.PathRequest),
+		announceHistory: make(map[string]announceRecord),
+		identity:        identity,
+		destination:     dest,
 	}
 
 	// Initialize interfaces from config
@@ -163,11 +182,7 @@ func (r *Reticulum) handleInterface(iface common.NetworkInterface) {
 
 			if len(data) > 0 {
 				debugLog(DEBUG_TRACE, "Interface %s: Received packet type 0x%02x", iface.GetName(), data[0])
-				if data[0] == announce.PACKET_TYPE_ANNOUNCE {
-					r.handleAnnounce(data, iface)
-				} else {
-					r.transport.HandlePacket(data, iface)
-				}
+				r.transport.HandlePacket(data, iface)
 			}
 
 			debugLog(5, "Processed %d bytes from interface %s", size, iface.GetName())
@@ -386,67 +401,92 @@ func initializeDirectories() error {
 func (r *Reticulum) Start() error {
 	debugLog(2, "Starting Reticulum...")
 
-	// Create announce using r.identity
-	announce, err := announce.NewAnnounce(
-		r.identity,
-		[]byte("Reticulum-Go"),
-		nil,
-		false,
-	)
-	if err != nil {
-		return fmt.Errorf("failed to create announce: %v", err)
-	}
-
-	// Start transport
+	// Start transport first
 	if err := r.transport.Start(); err != nil {
 		return fmt.Errorf("failed to start transport: %v", err)
 	}
 	debugLog(3, "Transport started successfully")
 
-	// Start interfaces
+	// Start interfaces and set up handlers
 	for _, iface := range r.interfaces {
 		debugLog(2, "Starting interface %s...", iface.GetName())
 		if err := iface.Start(); err != nil {
-			return fmt.Errorf("failed to start interface %s: %v", iface.GetName(), err)
+			if r.config.PanicOnInterfaceErr {
+				return fmt.Errorf("failed to start interface %s: %v", iface.GetName(), err)
+			}
+			debugLog(1, "Error starting interface %s: %v", iface.GetName(), err)
+			continue
 		}
-		r.handleInterface(iface)
+
+		if netIface, ok := iface.(common.NetworkInterface); ok {
+			r.handleInterface(netIface)
+		}
 		debugLog(3, "Interface %s started successfully", iface.GetName())
 	}
 
-	// Wait for interfaces to be ready
+	// Create initial announce packet
+	announceData := []byte("Reticulum-Go")
+	announcePacket := transport.CreateAnnouncePacket(
+		r.identity.Hash(),
+		r.identity,
+		announceData,
+		0,
+	)
+
+	// Wait briefly for interfaces to initialize
 	time.Sleep(2 * time.Second)
 
-	// Send initial announces
+	// Send initial announces on all enabled interfaces
 	for _, iface := range r.interfaces {
 		if netIface, ok := iface.(common.NetworkInterface); ok {
 			if netIface.IsEnabled() && netIface.IsOnline() {
 				debugLog(2, "Sending initial announce on interface %s", netIface.GetName())
-				if err := announce.Propagate([]common.NetworkInterface{netIface}); err != nil {
-					debugLog(1, "Failed to propagate initial announce: %v", err)
+				if err := netIface.Send(announcePacket, ""); err != nil {
+					debugLog(1, "Failed to send initial announce on interface %s: %v", netIface.GetName(), err)
 				}
 			}
 		}
 	}
 
-	// Start periodic announces
+	// Start periodic announce goroutine
 	go func() {
-		ticker := time.NewTicker(5 * time.Minute)
+		ticker := time.NewTicker(ANNOUNCE_RATE_TARGET * time.Second)
 		defer ticker.Stop()
 
+		announceCount := 0
 		for range ticker.C {
-			debugLog(3, "Starting periodic announce cycle")
+			announceCount++
+			debugLog(3, "Starting periodic announce cycle #%d", announceCount)
+
+			// Create fresh announce packet for each cycle
+			announcePacket := transport.CreateAnnouncePacket(
+				r.identity.Hash(),
+				r.identity,
+				announceData,
+				0,
+			)
+
 			for _, iface := range r.interfaces {
 				if netIface, ok := iface.(common.NetworkInterface); ok {
 					if netIface.IsEnabled() && netIface.IsOnline() {
 						debugLog(2, "Sending periodic announce on interface %s", netIface.GetName())
-						if err := announce.Propagate([]common.NetworkInterface{netIface}); err != nil {
-							debugLog(1, "Failed to propagate periodic announce: %v", err)
+						if err := netIface.Send(announcePacket, ""); err != nil {
+							debugLog(1, "Failed to send periodic announce on interface %s: %v", netIface.GetName(), err)
+							continue
+						}
+
+						// Apply rate limiting after grace period
+						if announceCount > ANNOUNCE_RATE_GRACE {
+							time.Sleep(time.Duration(ANNOUNCE_RATE_PENALTY) * time.Second)
 						}
 					}
 				}
 			}
 		}
 	}()
+
+	// Start interface monitoring
+	go r.monitorInterfaces()
 
 	debugLog(2, "Reticulum started successfully")
 	return nil
@@ -479,103 +519,6 @@ func (r *Reticulum) Stop() error {
 
 	debugLog(2, "Reticulum stopped successfully")
 	return nil
-}
-
-func (r *Reticulum) handleAnnounce(data []byte, iface common.NetworkInterface) {
-	debugLog(DEBUG_INFO, "Received announce packet on interface %s (%d bytes)", iface.GetName(), len(data))
-
-	a := &announce.Announce{}
-	if err := a.HandleAnnounce(data); err != nil {
-		debugLog(DEBUG_ERROR, "Error handling announce: %v", err)
-		return
-	}
-
-	// Log announce details
-	debugLog(DEBUG_ALL, "Announce details:")
-	debugLog(DEBUG_ALL, "  Hash: %x", a.Hash())
-
-	// Get fields using packet data
-	packet := a.GetPacket()
-	if len(packet) > 2 {
-		destHash := packet[2:18]
-		hops := packet[50]
-		debugLog(DEBUG_ALL, "  Destination Hash: %x", destHash)
-		debugLog(DEBUG_ALL, "  Hops: %d", hops)
-	}
-
-	// Check announce history
-	announceKey := fmt.Sprintf("%x", a.Hash())
-	r.announceHistoryMu.Lock()
-	record, exists := r.announceHistory[announceKey]
-
-	if exists {
-		// Check if this interface has already seen this announce
-		if record.interfaces[iface.GetName()] {
-			r.announceHistoryMu.Unlock()
-			debugLog(4, "Duplicate announce from %s, ignoring", iface.GetName())
-			return
-		}
-
-		// Check rate limiting
-		timeSinceLastSeen := time.Since(record.lastSeen)
-		if timeSinceLastSeen < time.Duration(ANNOUNCE_RATE_TARGET)*time.Second {
-			if record.seenCount > ANNOUNCE_RATE_GRACE {
-				record.violations++
-				waitTime := ANNOUNCE_RATE_TARGET + (record.violations * ANNOUNCE_RATE_PENALTY)
-				r.announceHistoryMu.Unlock()
-				debugLog(3, "Rate limit exceeded for announce %s, waiting %d seconds", announceKey, waitTime)
-				return
-			}
-		}
-
-		record.seenCount++
-		record.lastSeen = time.Now()
-		record.interfaces[iface.GetName()] = true
-	} else {
-		record = announceRecord{
-			lastSeen:   time.Now(),
-			seenCount:  1,
-			interfaces: make(map[string]bool),
-		}
-		record.interfaces[iface.GetName()] = true
-		r.announceHistory[announceKey] = record
-	}
-	r.announceHistoryMu.Unlock()
-
-	// Add random delay before propagation (0-2 seconds)
-	delay := time.Duration(rand.Float64() * 2 * float64(time.Second))
-	time.Sleep(delay)
-
-	// Propagate to other interfaces according to RNS rules
-	for _, otherIface := range r.interfaces {
-		if otherIface.GetName() == iface.GetName() {
-			continue
-		}
-
-		srcMode := iface.GetMode()
-		dstMode := otherIface.GetMode()
-
-		// Skip propagation based on interface modes
-		if srcMode == common.IF_MODE_ACCESS_POINT && dstMode != common.IF_MODE_FULL {
-			debugLog(4, "Skipping announce propagation from AP to non-full mode interface")
-			continue
-		}
-		if srcMode == common.IF_MODE_ROAMING && dstMode == common.IF_MODE_ACCESS_POINT {
-			debugLog(4, "Skipping announce propagation from roaming to AP interface")
-			continue
-		}
-
-		// Check if interface has bandwidth available
-		if netIface, ok := otherIface.(common.NetworkInterface); ok {
-			if netIface.GetBandwidthAvailable() {
-				if err := a.Propagate([]common.NetworkInterface{netIface}); err != nil {
-					debugLog(1, "Error propagating announce: %v", err)
-				}
-			} else {
-				debugLog(3, "Interface %s has insufficient bandwidth for announce", netIface.GetName())
-			}
-		}
-	}
 }
 
 type AnnounceHandler struct {
@@ -616,4 +559,8 @@ func (h *AnnounceHandler) ReceivedAnnounce(destHash []byte, id interface{}, appD
 
 func (h *AnnounceHandler) ReceivePathResponses() bool {
 	return true
+}
+
+func (r *Reticulum) GetDestination() *destination.Destination {
+	return r.destination
 }
