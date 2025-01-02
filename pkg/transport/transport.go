@@ -1046,7 +1046,7 @@ func CreateAnnouncePacket(destHash []byte, identity *identity.Identity, appData 
 		(0 << 7) | // Interface flag (IFAC_NONE)
 			(0 << 6) | // Header type (HEADER_TYPE_1)
 			(0 << 5) | // Context flag
-			(1 << 4) | // Propagation type (BROADCAST)
+			(0 << 4) | // Propagation type (BROADCAST)
 			(0 << 2) | // Destination type (SINGLE)
 			PACKET_TYPE_ANNOUNCE, // Packet type (0x01)
 	)
@@ -1054,23 +1054,29 @@ func CreateAnnouncePacket(destHash []byte, identity *identity.Identity, appData 
 	log.Printf("[DEBUG-7] Created header byte: %02x, hops: %d", headerByte, hops)
 	packet := []byte{headerByte, hops}
 
+	// Add destination hash (16 bytes)
 	log.Printf("[DEBUG-7] Adding destination hash (16 bytes): %x", destHash)
 	packet = append(packet, destHash...)
 
+	// Get full public key and split into encryption and signing keys
 	pubKey := identity.GetPublicKey()
-	encKey := pubKey[:32]
-	signKey := pubKey[32:]
+	encKey := pubKey[:32]  // x25519 public key for encryption
+	signKey := pubKey[32:] // Ed25519 public key for signing
 
+	// Add encryption key (32 bytes)
 	log.Printf("[DEBUG-7] Adding encryption key (32 bytes): %x", encKey)
 	packet = append(packet, encKey...)
 
+	// Add signing key (32 bytes)
 	log.Printf("[DEBUG-7] Adding signing key (32 bytes): %x", signKey)
 	packet = append(packet, signKey...)
 
+	// Add name hash (10 bytes)
 	nameHash := sha256.Sum256([]byte(fmt.Sprintf("%s.%s", config.AppName, config.AppAspect)))
 	log.Printf("[DEBUG-7] Adding name hash (10 bytes): %x", nameHash[:10])
 	packet = append(packet, nameHash[:10]...)
 
+	// Add random hash (5 random + 5 timestamp bytes = 10 bytes)
 	randomBytes := make([]byte, 5)
 	rand.Read(randomBytes)
 	timeBytes := make([]byte, 8)
@@ -1079,25 +1085,26 @@ func CreateAnnouncePacket(destHash []byte, identity *identity.Identity, appData 
 	packet = append(packet, randomBytes...)
 	packet = append(packet, timeBytes[:5]...)
 
+	// Create msgpack array for app data
 	nameBytes := []byte(fmt.Sprintf("%s.%s", config.AppName, config.AppAspect))
 	appDataMsg := []byte{
 		0x92,                 // msgpack array of 2 elements
 		0xc4,                 // bin 8 format for byte array
 		byte(len(nameBytes)), // length prefix
 	}
+	log.Printf("[DEBUG-7] Adding name bytes: %x", nameBytes)
 	appDataMsg = append(appDataMsg, nameBytes...)
-	appDataMsg = append(appDataMsg, 0x00)
+	appDataMsg = append(appDataMsg, appData...)
 
+	// Create signature over destination hash and app data
 	signData := append(destHash, appDataMsg...)
 	signature := identity.Sign(signData)
 	log.Printf("[DEBUG-7] Adding signature (64 bytes): %x", signature)
 	packet = append(packet, signature...)
 
+	// Finally add the app data message
 	packet = append(packet, appDataMsg...)
+
 	log.Printf("[DEBUG-7] Final packet size: %d bytes", len(packet))
-
-	announceHash := sha256.Sum256(packet)
-	log.Printf("[DEBUG-7] Generated announce hash: %x", announceHash)
-
 	return packet
 }

@@ -340,13 +340,12 @@ func main() {
 	debugLog(1, "Goodbye!")
 }
 
-// Update transportWrapper to use packet.Packet
 type transportWrapper struct {
 	*transport.Transport
 }
 
 func (tw *transportWrapper) GetRTT() float64 {
-	return 0.1 // Default value for now
+	return 0.1
 }
 
 func (tw *transportWrapper) RTT() float64 {
