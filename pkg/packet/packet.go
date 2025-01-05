@@ -82,7 +82,7 @@ type Packet struct {
 	SNR  *float64
 	Q    *float64
 
-	Addresses []byte // Add this field for address storage
+	Addresses []byte
 }
 
 func NewPacket(destType byte, data []byte, packetType byte, context byte,

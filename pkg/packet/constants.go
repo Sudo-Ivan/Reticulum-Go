@@ -15,9 +15,7 @@ const (
 	DestinationPlain  = 2
 	DestinationLink   = 3
 
-	// Packet Types
-	PacketData        = 0
-	PacketAnnounce    = 1
-	PacketLinkRequest = 2
-	PacketProof       = 3
+	// Minimum packet sizes
+	MinAnnounceSize = 169 // header(2) + desthash(16) + enckey(32) + signkey(32) +
+	// namehash(10) + randomhash(10) + signature(64) + min appdata(3)
 )

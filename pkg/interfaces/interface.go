@@ -284,3 +284,31 @@ func (i *BaseInterface) updateBandwidthStats(bytes uint64) {
 
 	log.Printf("[DEBUG-%d] Interface %s: Updated bandwidth stats - TX bytes: %d, Last TX: %v", DEBUG_LEVEL, i.Name, i.TxBytes, i.lastTx)
 }
+
+type InterceptedInterface struct {
+	Interface
+	interceptor  func([]byte, common.NetworkInterface) error
+	originalSend func([]byte, string) error
+}
+
+// Create constructor for intercepted interface
+func NewInterceptedInterface(base Interface, interceptor func([]byte, common.NetworkInterface) error) *InterceptedInterface {
+	return &InterceptedInterface{
+		Interface:    base,
+		interceptor:  interceptor,
+		originalSend: base.Send,
+	}
+}
+
+// Implement Send method for intercepted interface
+func (i *InterceptedInterface) Send(data []byte, addr string) error {
+	// Call interceptor if provided
+	if i.interceptor != nil && len(data) > 0 {
+		if err := i.interceptor(data, i); err != nil {
+			log.Printf("[DEBUG-2] Failed to intercept outgoing packet: %v", err)
+		}
+	}
+
+	// Call original send
+	return i.originalSend(data, addr)
+}
