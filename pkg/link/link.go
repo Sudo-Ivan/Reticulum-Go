@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Sudo-Ivan/reticulum-go/pkg/common"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/destination"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/identity"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/packet"
@@ -52,6 +53,7 @@ type Link struct {
 	mutex            sync.RWMutex
 	destination      *destination.Destination
 	status           byte
+	networkInterface common.NetworkInterface
 	establishedAt    time.Time
 	lastInbound      time.Time
 	lastOutbound     time.Time
@@ -94,11 +96,12 @@ type Link struct {
 	initiator            bool
 }
 
-func NewLink(dest *destination.Destination, transport *transport.Transport, establishedCallback func(*Link), closedCallback func(*Link)) *Link {
+func NewLink(dest *destination.Destination, transport *transport.Transport, networkIface common.NetworkInterface, establishedCallback func(*Link), closedCallback func(*Link)) *Link {
 	return &Link{
 		destination:         dest,
 		status:              STATUS_PENDING,
 		transport:           transport,
+		networkInterface:    networkIface,
 		establishedCallback: establishedCallback,
 		closedCallback:      closedCallback,
 		establishedAt:       time.Time{}, // Zero time until established
@@ -775,25 +778,36 @@ func (l *Link) decodePacket(data []byte) {
 		}
 
 	case packet.PacketTypeAnnounce:
-		log.Printf("[DEBUG-7] - Type Description: RNS Announce")
-		if len(data) > 33 {
-			destHash := data[1:17]
-			pubKey := data[17:49]
-			log.Printf("[DEBUG-7] - Destination Hash: %x", destHash)
-			log.Printf("[DEBUG-7] - Public Key: %x", pubKey)
+		log.Printf("[DEBUG-7] Received announce packet (%d bytes)", len(data))
+		if len(data) < packet.MinAnnounceSize {
+			log.Printf("[DEBUG-3] Announce packet too short: %d bytes", len(data))
+			return
+		}
 
-			if len(data) > 81 {
-				signature := data[49:81]
-				appData := data[81:]
-				if identity.ValidateAnnounce(data, destHash, pubKey, signature, appData) {
-					log.Printf("[DEBUG-7] - Announce signature valid")
+		destHash := data[2:18]
+		encKey := data[18:50]
+		signKey := data[50:82]
+		nameHash := data[82:92]
+		randomHash := data[92:102]
+		signature := data[102:166]
+		appData := data[166:]
 
-					if path, ok := l.pathFinder.GetPath(hex.EncodeToString(destHash)); ok {
-						log.Printf("[DEBUG-7] - Updated path: Interface=%s, Hops=%d",
-							path.Interface, path.HopCount)
-					}
-				}
+		pubKey := append(encKey, signKey...)
+
+		validationData := make([]byte, 0, 164)
+		validationData = append(validationData, destHash...)
+		validationData = append(validationData, encKey...)
+		validationData = append(validationData, signKey...)
+		validationData = append(validationData, nameHash...)
+		validationData = append(validationData, randomHash...)
+
+		if identity.ValidateAnnounce(validationData, destHash, pubKey, signature, appData) {
+			log.Printf("[DEBUG-4] Valid announce from %x", pubKey[:8])
+			if err := l.transport.HandleAnnounce(destHash, l.networkInterface); err != nil {
+				log.Printf("[DEBUG-3] Failed to handle announce: %v", err)
 			}
+		} else {
+			log.Printf("[DEBUG-3] Invalid announce signature from %x", pubKey[:8])
 		}
 
 	case packet.PacketTypeProof:

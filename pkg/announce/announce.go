@@ -169,7 +169,7 @@ func (a *Announce) HandleAnnounce(data []byte) error {
 
 	log.Printf("[DEBUG-7] Handling announce packet of %d bytes", len(data))
 
-	// Minimum packet size validation (header(2) + desthash(16) + enckey(32) + signkey(32) + namehash(10) + 
+	// Minimum packet size validation (header(2) + desthash(16) + enckey(32) + signkey(32) + namehash(10) +
 	// randomhash(10) + signature(64) + min app data(3))
 	if len(data) < 169 {
 		log.Printf("[DEBUG-7] Invalid announce data length: %d bytes", len(data))
@@ -187,7 +187,7 @@ func (a *Announce) HandleAnnounce(data []byte) error {
 	signature := data[102:166]
 	appData := data[166:]
 
-	log.Printf("[DEBUG-7] Announce fields: destHash=%x, encKey=%x, signKey=%x", 
+	log.Printf("[DEBUG-7] Announce fields: destHash=%x, encKey=%x, signKey=%x",
 		destHash, encKey, signKey)
 	log.Printf("[DEBUG-7] Name hash=%x, random hash=%x", nameHash, randomHash)
 
@@ -254,83 +254,54 @@ func CreateHeader(ifacFlag byte, headerType byte, contextFlag byte, propType byt
 }
 
 func (a *Announce) CreatePacket() []byte {
-	log.Printf("[DEBUG-7] Creating announce packet")
-
-	// Create header byte
-	headerByte := byte(
-		(IFAC_NONE) |                  // No interface auth
-		(HEADER_TYPE_1 << 6) |         // Single address field
-		(0 << 5) |                     // No context
-		(PROP_TYPE_BROADCAST << 4) |    // Broadcast propagation
-		(DEST_TYPE_SINGLE << 2) |      // Single destination
-		PACKET_TYPE_ANNOUNCE,          // Announce packet type
+	// Create header
+	header := CreateHeader(
+		IFAC_NONE,
+		HEADER_TYPE_1,
+		0, // No context flag
+		PROP_TYPE_BROADCAST,
+		DEST_TYPE_SINGLE,
+		PACKET_TYPE_ANNOUNCE,
+		a.hops,
 	)
 
-	log.Printf("[DEBUG-7] Created header byte: %02x, hops: %d", headerByte, a.hops)
-	packet := []byte{headerByte, a.hops}
+	packet := header
 
 	// Add destination hash (16 bytes)
-	log.Printf("[DEBUG-7] Adding destination hash (16 bytes): %x", a.destinationHash)
 	packet = append(packet, a.destinationHash...)
 
-	// Get full public key and split into encryption and signing keys
+	// Add public key parts (32 bytes each)
 	pubKey := a.identity.GetPublicKey()
-	encKey := pubKey[:32]  // x25519 public key for encryption
-	signKey := pubKey[32:] // Ed25519 public key for signing
-
-	// Add encryption key (32 bytes)
-	log.Printf("[DEBUG-7] Adding encryption key (32 bytes): %x", encKey)
-	packet = append(packet, encKey...)
-
-	// Add signing key (32 bytes)
-	log.Printf("[DEBUG-7] Adding signing key (32 bytes): %x", signKey)
-	packet = append(packet, signKey...)
+	packet = append(packet, pubKey[:32]...) // Encryption key
+	packet = append(packet, pubKey[32:]...) // Signing key
 
 	// Add name hash (10 bytes)
 	nameHash := sha256.Sum256([]byte(fmt.Sprintf("%s.%s", a.config.AppName, a.config.AppAspect)))
-	log.Printf("[DEBUG-7] Adding name hash (10 bytes): %x", nameHash[:10])
 	packet = append(packet, nameHash[:10]...)
 
-	// Add random hash (10 bytes: 5 random + 5 timestamp)
-	randomBytes := make([]byte, 5)
+	// Add random hash (10 bytes)
+	randomBytes := make([]byte, 10)
 	rand.Read(randomBytes)
-	timeBytes := make([]byte, 8)
-	binary.BigEndian.PutUint64(timeBytes, uint64(time.Now().Unix()))
-	log.Printf("[DEBUG-7] Adding random hash (10 bytes): %x%x", randomBytes, timeBytes[:5])
 	packet = append(packet, randomBytes...)
-	packet = append(packet, timeBytes[:5]...)
 
-	// Add ratchet ID if present (32 bytes)
-	if a.ratchetID != nil {
-		log.Printf("[DEBUG-7] Adding ratchet ID (32 bytes): %x", a.ratchetID)
-		packet = append(packet, a.ratchetID...)
-	}
+	// Create validation data for signature
+	validationData := make([]byte, 0)
+	validationData = append(validationData, a.destinationHash...)
+	validationData = append(validationData, pubKey[:32]...)  // Encryption key
+	validationData = append(validationData, pubKey[32:]...) // Signing key
+	validationData = append(validationData, nameHash[:10]...)
+	validationData = append(validationData, randomBytes...)
+	validationData = append(validationData, a.appData...)
 
-	// Create msgpack array for app data
-	appData := []byte{
-		0x92,  // msgpack array of 2 elements
-		0xc4,  // bin 8 format for byte array
-	}
-	
-	// Add name bytes
-	nameBytes := []byte(fmt.Sprintf("%s.%s", a.config.AppName, a.config.AppAspect))
-	appData = append(appData, byte(len(nameBytes))) // length prefix
-	appData = append(appData, nameBytes...)         // name bytes
-	appData = append(appData, 0x00)                 // ticket value = 0
-
-	// Create signature over destination hash and app data
-	signData := append(a.destinationHash, appData...)
-	if a.ratchetID != nil {
-		signData = append(signData, a.ratchetID...)
-	}
-	signature := a.identity.Sign(signData)
-	log.Printf("[DEBUG-7] Adding signature (64 bytes): %x", signature)
+	// Add signature (64 bytes)
+	signature := a.identity.Sign(validationData)
 	packet = append(packet, signature...)
 
-	// Finally add the app data
-	packet = append(packet, appData...)
+	// Add app data
+	if len(a.appData) > 0 {
+		packet = append(packet, a.appData...)
+	}
 
-	log.Printf("[DEBUG-7] Final packet size: %d bytes", len(packet))
 	return packet
 }
 

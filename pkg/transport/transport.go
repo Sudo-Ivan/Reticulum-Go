@@ -1041,7 +1041,9 @@ func (l *Link) GetStatus() int {
 
 func CreateAnnouncePacket(destHash []byte, identity *identity.Identity, appData []byte, hops byte, config *common.ReticulumConfig) []byte {
 	log.Printf("[DEBUG-7] Creating announce packet")
+	log.Printf("[DEBUG-7] Input parameters: destHash=%x, appData=%x, hops=%d", destHash, appData, hops)
 
+	// Create header (2 bytes)
 	headerByte := byte(
 		(0 << 7) | // Interface flag (IFAC_NONE)
 			(0 << 6) | // Header type (HEADER_TYPE_1)
@@ -1051,32 +1053,42 @@ func CreateAnnouncePacket(destHash []byte, identity *identity.Identity, appData 
 			PACKET_TYPE_ANNOUNCE, // Packet type (0x01)
 	)
 
-	log.Printf("[DEBUG-7] Created header byte: %02x, hops: %d", headerByte, hops)
+	log.Printf("[DEBUG-7] Created header byte: 0x%02x, hops: %d", headerByte, hops)
 	packet := []byte{headerByte, hops}
+	log.Printf("[DEBUG-7] Initial packet size: %d bytes", len(packet))
 
 	// Add destination hash (16 bytes)
+	if len(destHash) > 16 {
+		destHash = destHash[:16]
+	}
 	log.Printf("[DEBUG-7] Adding destination hash (16 bytes): %x", destHash)
 	packet = append(packet, destHash...)
+	log.Printf("[DEBUG-7] Packet size after adding destination hash: %d bytes", len(packet))
 
 	// Get full public key and split into encryption and signing keys
 	pubKey := identity.GetPublicKey()
 	encKey := pubKey[:32]  // x25519 public key for encryption
 	signKey := pubKey[32:] // Ed25519 public key for signing
+	log.Printf("[DEBUG-7] Full public key: %x", pubKey)
 
 	// Add encryption key (32 bytes)
 	log.Printf("[DEBUG-7] Adding encryption key (32 bytes): %x", encKey)
 	packet = append(packet, encKey...)
+	log.Printf("[DEBUG-7] Packet size after adding encryption key: %d bytes", len(packet))
 
 	// Add signing key (32 bytes)
 	log.Printf("[DEBUG-7] Adding signing key (32 bytes): %x", signKey)
 	packet = append(packet, signKey...)
+	log.Printf("[DEBUG-7] Packet size after adding signing key: %d bytes", len(packet))
 
 	// Add name hash (10 bytes)
-	nameHash := sha256.Sum256([]byte(fmt.Sprintf("%s.%s", config.AppName, config.AppAspect)))
+	nameString := fmt.Sprintf("%s.%s", config.AppName, config.AppAspect)
+	nameHash := sha256.Sum256([]byte(nameString))
 	log.Printf("[DEBUG-7] Adding name hash (10 bytes): %x", nameHash[:10])
 	packet = append(packet, nameHash[:10]...)
+	log.Printf("[DEBUG-7] Packet size after adding name hash: %d bytes", len(packet))
 
-	// Add random hash (5 random + 5 timestamp bytes = 10 bytes)
+	// Add random hash (10 bytes)
 	randomBytes := make([]byte, 5)
 	rand.Read(randomBytes)
 	timeBytes := make([]byte, 8)
@@ -1084,16 +1096,20 @@ func CreateAnnouncePacket(destHash []byte, identity *identity.Identity, appData 
 	log.Printf("[DEBUG-7] Adding random hash (10 bytes): %x%x", randomBytes, timeBytes[:5])
 	packet = append(packet, randomBytes...)
 	packet = append(packet, timeBytes[:5]...)
+	log.Printf("[DEBUG-7] Packet size after adding random hash: %d bytes", len(packet))
 
 	// Create msgpack array for app data
-	nameBytes := []byte(fmt.Sprintf("%s.%s", config.AppName, config.AppAspect))
-	appDataMsg := []byte{
-		0x92,                 // msgpack array of 2 elements
-		0xc4,                 // bin 8 format for byte array
-		byte(len(nameBytes)), // length prefix
-	}
-	log.Printf("[DEBUG-7] Adding name bytes: %x", nameBytes)
+	nameBytes := []byte(nameString)
+	appDataMsg := []byte{0x92} // array of 2 elements
+
+	// Add name as first element
+	appDataMsg = append(appDataMsg, 0xc4)                 // bin 8 format
+	appDataMsg = append(appDataMsg, byte(len(nameBytes))) // length
 	appDataMsg = append(appDataMsg, nameBytes...)
+
+	// Add app data as second element
+	appDataMsg = append(appDataMsg, 0xc4)               // bin 8 format
+	appDataMsg = append(appDataMsg, byte(len(appData))) // length
 	appDataMsg = append(appDataMsg, appData...)
 
 	// Create signature over destination hash and app data
@@ -1101,10 +1117,24 @@ func CreateAnnouncePacket(destHash []byte, identity *identity.Identity, appData 
 	signature := identity.Sign(signData)
 	log.Printf("[DEBUG-7] Adding signature (64 bytes): %x", signature)
 	packet = append(packet, signature...)
+	log.Printf("[DEBUG-7] Packet size after adding signature: %d bytes", len(packet))
 
 	// Finally add the app data message
 	packet = append(packet, appDataMsg...)
-
 	log.Printf("[DEBUG-7] Final packet size: %d bytes", len(packet))
+	log.Printf("[DEBUG-7] Complete packet: %x", packet)
+
 	return packet
+}
+
+func (t *Transport) GetInterfaces() map[string]common.NetworkInterface {
+	t.mutex.RLock()
+	defer t.mutex.RUnlock()
+
+	interfaces := make(map[string]common.NetworkInterface, len(t.interfaces))
+	for k, v := range t.interfaces {
+		interfaces[k] = v
+	}
+
+	return interfaces
 }
