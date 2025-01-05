@@ -221,23 +221,25 @@ func CreateDefaultConfig(path string) error {
 	}
 
 	// Add default interfaces
-	cfg.Interfaces["RNS Testnet Amsterdam"] = &common.InterfaceConfig{
+	cfg.Interfaces["Go-RNS-Testnet"] = &common.InterfaceConfig{
 		Type:       "TCPClientInterface",
 		Enabled:    true,
-		TargetHost: "amsterdam.connect.reticulum.network",
-		TargetPort: 4965,
+		TargetHost: "127.0.0.1",
+		TargetPort: 4242,
+		Name:       "Go-RNS-Testnet",
 	}
 
-	cfg.Interfaces["RNS Testnet BetweenTheBorders"] = &common.InterfaceConfig{
+	cfg.Interfaces["Quad4 TCP"] = &common.InterfaceConfig{
 		Type:       "TCPClientInterface",
 		Enabled:    true,
-		TargetHost: "reticulum.betweentheborders.com",
+		TargetHost: "rns.quad4.io",
 		TargetPort: 4242,
+		Name:       "Quad4 TCP",
 	}
 
 	cfg.Interfaces["Local UDP"] = &common.InterfaceConfig{
 		Type:    "UDPInterface",
-		Enabled: true,
+		Enabled: false,
 		Address: "0.0.0.0",
 		Port:    37696,
 	}
