@@ -20,10 +20,13 @@ import (
 	"github.com/Sudo-Ivan/reticulum-go/pkg/interfaces"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/packet"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/transport"
+	testutils "github.com/Sudo-Ivan/reticulum-go/test-utilities"
 )
 
 var (
-	debugLevel = flag.Int("debug", 7, "Debug level (0-7)")
+	debugLevel       = flag.Int("debug", 7, "Debug level (0-7)")
+	interceptPackets = flag.Bool("intercept-packets", false, "Enable packet interception")
+	interceptOutput  = flag.String("intercept-output", "packets.log", "Output file for intercepted packets")
 )
 
 func debugLog(level int, format string, v ...interface{}) {
@@ -123,6 +126,31 @@ func NewReticulum(cfg *common.ReticulumConfig) (*Reticulum, error) {
 		destination:     dest,
 	}
 
+	// Initialize packet interceptor if enabled
+	var interceptor *testutils.PacketInterceptor
+	if *interceptPackets {
+		var err error
+		interceptor, err = testutils.NewPacketInterceptor(*interceptOutput)
+		if err != nil {
+			debugLog(DEBUG_ERROR, "Failed to initialize packet interceptor: %v", err)
+		} else {
+			debugLog(DEBUG_INFO, "Packet interception enabled")
+		}
+	}
+
+	// Create a wrapper for the packet callback that includes interception
+	packetCallbackWrapper := func(data []byte, iface common.NetworkInterface) {
+		if interceptor != nil {
+			if err := interceptor.InterceptIncoming(data, iface); err != nil {
+				debugLog(DEBUG_ERROR, "Failed to intercept incoming packet: %v", err)
+			}
+		}
+		// Call original callback
+		if r.transport != nil {
+			r.transport.HandlePacket(data, iface)
+		}
+	}
+
 	// Initialize interfaces from config
 	for name, ifaceConfig := range cfg.Interfaces {
 		if !ifaceConfig.Enabled {
@@ -164,8 +192,19 @@ func NewReticulum(cfg *common.ReticulumConfig) (*Reticulum, error) {
 			continue
 		}
 
+		// Set the wrapped packet callback
+		iface.SetPacketCallback(packetCallbackWrapper)
+
+		// Wrap interface for outgoing packet interception
+		if interceptor != nil {
+			iface = interfaces.NewInterceptedInterface(iface, func(data []byte, ni common.NetworkInterface) error {
+				return interceptor.InterceptOutgoing(data, ni)
+			})
+		}
+
 		debugLog(2, "Configuring interface %s (type=%s)...", name, ifaceConfig.Type)
 		r.interfaces = append(r.interfaces, iface)
+		debugLog(3, "Interface %s started successfully", name)
 	}
 
 	return r, nil
@@ -176,7 +215,12 @@ func (r *Reticulum) handleInterface(iface common.NetworkInterface) {
 
 	ch := channel.NewChannel(&transportWrapper{r.transport})
 	r.channels[iface.GetName()] = ch
-	debugLog(DEBUG_VERBOSE, "Created channel for interface %s with transport wrapper", iface.GetName())
+
+	// Get interceptor if enabled
+	var interceptor *testutils.PacketInterceptor
+	if *interceptPackets {
+		interceptor, _ = testutils.NewPacketInterceptor(*interceptOutput)
+	}
 
 	rw := buffer.CreateBidirectionalBuffer(
 		1,
@@ -188,28 +232,22 @@ func (r *Reticulum) handleInterface(iface common.NetworkInterface) {
 			iface.ProcessIncoming(data)
 
 			if len(data) > 0 {
+				// Intercept incoming packet before processing
+				if interceptor != nil {
+					if err := interceptor.InterceptIncoming(data, iface); err != nil {
+						debugLog(DEBUG_ERROR, "Failed to intercept incoming packet: %v", err)
+					}
+				}
+
 				debugLog(DEBUG_TRACE, "Interface %s: Received packet type 0x%02x", iface.GetName(), data[0])
 				r.transport.HandlePacket(data, iface)
 			}
-
-			debugLog(5, "Processed %d bytes from interface %s", size, iface.GetName())
 		},
 	)
 
 	r.buffers[iface.GetName()] = &buffer.Buffer{
 		ReadWriter: rw,
 	}
-	debugLog(DEBUG_VERBOSE, "Created bidirectional buffer for interface %s", iface.GetName())
-
-	iface.SetPacketCallback(func(data []byte, ni common.NetworkInterface) {
-		if buf, ok := r.buffers[ni.GetName()]; ok {
-			if _, err := buf.Write(data); err != nil {
-				debugLog(1, "Error writing to buffer for interface %s: %v", ni.GetName(), err)
-			}
-			debugLog(6, "Written %d bytes to interface %s buffer", len(data), ni.GetName())
-		}
-		r.transport.HandlePacket(data, ni)
-	})
 }
 
 func (r *Reticulum) monitorInterfaces() {
@@ -286,9 +324,7 @@ func main() {
 	go r.monitorInterfaces()
 
 	// Register announce handler
-	handler := &AnnounceHandler{
-		aspectFilter: []string{"*"},
-	}
+	handler := NewAnnounceHandler(r, []string{"*"})
 	r.transport.RegisterAnnounceHandler(handler)
 
 	// Start Reticulum
@@ -538,6 +574,14 @@ func (r *Reticulum) Stop() error {
 
 type AnnounceHandler struct {
 	aspectFilter []string
+	reticulum    *Reticulum
+}
+
+func NewAnnounceHandler(r *Reticulum, aspectFilter []string) *AnnounceHandler {
+	return &AnnounceHandler{
+		aspectFilter: aspectFilter,
+		reticulum:    r,
+	}
 }
 
 func (h *AnnounceHandler) AspectFilter() []string {
@@ -546,12 +590,31 @@ func (h *AnnounceHandler) AspectFilter() []string {
 
 func (h *AnnounceHandler) ReceivedAnnounce(destHash []byte, id interface{}, appData []byte) error {
 	debugLog(DEBUG_INFO, "Received announce from %x", destHash)
+	debugLog(DEBUG_PACKETS, "Raw announce data: %x", appData)
 
+	// Parse msgpack array
 	if len(appData) > 0 {
-		debugLog(DEBUG_VERBOSE, "Announce app data: %s", string(appData))
+		if appData[0] == 0x92 { // msgpack array of 2 elements
+			var pos = 1
+
+			// Parse first element (name)
+			if appData[pos] == 0xc4 { // bin 8 format
+				nameLen := int(appData[pos+1])
+				name := string(appData[pos+2 : pos+2+nameLen])
+				pos += 2 + nameLen
+				debugLog(DEBUG_VERBOSE, "Announce name: %s", name)
+
+				// Parse second element (app data)
+				if pos < len(appData) && appData[pos] == 0xc4 { // bin 8 format
+					dataLen := int(appData[pos+1])
+					data := appData[pos+2 : pos+2+dataLen]
+					debugLog(DEBUG_VERBOSE, "Announce app data: %s", string(data))
+				}
+			}
+		}
 	}
 
-	// Type assert using the package path
+	// Type assert and log identity details
 	if identity, ok := id.(*identity.Identity); ok {
 		debugLog(DEBUG_ALL, "Identity details:")
 		debugLog(DEBUG_ALL, "  Hash: %s", identity.GetHexHash())
@@ -567,6 +630,15 @@ func (h *AnnounceHandler) ReceivedAnnounce(destHash []byte, id interface{}, appD
 				debugLog(DEBUG_ALL, "  Current Ratchet ID: %x", ratchetID)
 			}
 		}
+
+		// Store announce in history
+		h.reticulum.announceHistoryMu.Lock()
+		h.reticulum.announceHistory[identity.GetHexHash()] = announceRecord{
+			// You can add fields here to store relevant announce data
+		}
+		h.reticulum.announceHistoryMu.Unlock()
+
+		debugLog(DEBUG_VERBOSE, "Stored announce in history for identity %s", identity.GetHexHash())
 	}
 
 	return nil
