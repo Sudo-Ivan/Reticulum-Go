@@ -7,19 +7,18 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"sync"
 	"time"
 
-	"encoding/hex"
-
-	"log"
-
 	"github.com/Sudo-Ivan/reticulum-go/pkg/common"
+	"github.com/Sudo-Ivan/reticulum-go/pkg/cryptography"
 	"golang.org/x/crypto/curve25519"
 	"golang.org/x/crypto/hkdf"
 )
@@ -62,61 +61,6 @@ var (
 	ratchetPersistLock sync.Mutex
 )
 
-func encryptAESCBC(key, plaintext []byte) ([]byte, error) {
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, err
-	}
-
-	// Generate IV
-	iv := make([]byte, aes.BlockSize)
-	if _, err := io.ReadFull(rand.Reader, iv); err != nil {
-		return nil, err
-	}
-
-	// Add PKCS7 padding
-	padding := aes.BlockSize - len(plaintext)%aes.BlockSize
-	padtext := make([]byte, len(plaintext)+padding)
-	copy(padtext, plaintext)
-	for i := len(plaintext); i < len(padtext); i++ {
-		padtext[i] = byte(padding)
-	}
-
-	// Encrypt
-	mode := cipher.NewCBCEncrypter(block, iv)
-	ciphertext := make([]byte, len(padtext))
-	mode.CryptBlocks(ciphertext, padtext)
-
-	// Prepend IV to ciphertext
-	return append(iv, ciphertext...), nil
-}
-
-func decryptAESCBC(key, ciphertext []byte) ([]byte, error) {
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, err
-	}
-
-	if len(ciphertext) < aes.BlockSize {
-		return nil, errors.New("ciphertext too short")
-	}
-
-	iv := ciphertext[:aes.BlockSize]
-	ciphertext = ciphertext[aes.BlockSize:]
-
-	if len(ciphertext)%aes.BlockSize != 0 {
-		return nil, errors.New("ciphertext is not a multiple of block size")
-	}
-
-	mode := cipher.NewCBCDecrypter(block, iv)
-	plaintext := make([]byte, len(ciphertext))
-	mode.CryptBlocks(plaintext, ciphertext)
-
-	// Remove PKCS7 padding
-	padding := int(plaintext[len(plaintext)-1])
-	return plaintext[:len(plaintext)-padding], nil
-}
-
 func New() (*Identity, error) {
 	i := &Identity{
 		ratchets:      make(map[string][]byte),
@@ -124,30 +68,22 @@ func New() (*Identity, error) {
 		mutex:         &sync.RWMutex{},
 	}
 
-	// Generate X25519 key pair
-	i.privateKey = make([]byte, curve25519.ScalarSize)
-	if _, err := io.ReadFull(rand.Reader, i.privateKey); err != nil {
-		log.Printf("[DEBUG-1] Failed to generate X25519 private key: %v", err)
-		return nil, err
-	}
-
-	var err error
-	i.publicKey, err = curve25519.X25519(i.privateKey, curve25519.Basepoint)
+	// Generate keypairs using cryptography package
+	privKey, pubKey, err := cryptography.GenerateKeyPair()
 	if err != nil {
-		log.Printf("[DEBUG-1] Failed to generate X25519 public key: %v", err)
-		return nil, err
+		return nil, fmt.Errorf("failed to generate X25519 keypair: %v", err)
 	}
+	i.privateKey = privKey
+	i.publicKey = pubKey
 
 	// Generate Ed25519 signing keypair
-	pubKey, privKey, err := ed25519.GenerateKey(rand.Reader)
+	verificationKey, signingKey, err := cryptography.GenerateSigningKeyPair()
 	if err != nil {
-		log.Printf("[DEBUG-1] Failed to generate Ed25519 keypair: %v", err)
-		return nil, err
+		return nil, fmt.Errorf("failed to generate Ed25519 keypair: %v", err)
 	}
-	i.signingKey = privKey
-	i.verificationKey = pubKey
+	i.signingKey = signingKey
+	i.verificationKey = verificationKey
 
-	log.Printf("[DEBUG-7] Created new identity with hash: %x", i.Hash())
 	return i, nil
 }
 
@@ -164,31 +100,16 @@ func (i *Identity) GetPrivateKey() []byte {
 }
 
 func (i *Identity) Sign(data []byte) []byte {
-	return ed25519.Sign(i.signingKey, data)
+	return cryptography.Sign(i.signingKey, data)
 }
 
 func (i *Identity) Verify(data []byte, signature []byte) bool {
-	return ed25519.Verify(i.verificationKey, data, signature)
+	return cryptography.Verify(i.verificationKey, data, signature)
 }
 
 func (i *Identity) Encrypt(plaintext []byte, ratchet []byte) ([]byte, error) {
-	if i.publicKey == nil {
-		log.Printf("[DEBUG-1] Encryption failed: identity has no public key")
-		return nil, errors.New("encryption failed: identity does not hold a public key")
-	}
-
-	log.Printf("[DEBUG-7] Starting encryption for identity %s", i.GetHexHash())
-	if ratchet != nil {
-		log.Printf("[DEBUG-7] Using ratchet for encryption")
-	}
-
 	// Generate ephemeral keypair
-	ephemeralPrivKey := make([]byte, curve25519.ScalarSize)
-	if _, err := io.ReadFull(rand.Reader, ephemeralPrivKey); err != nil {
-		return nil, err
-	}
-
-	ephemeralPubKey, err := curve25519.X25519(ephemeralPrivKey, curve25519.Basepoint)
+	ephemeralPrivKey, ephemeralPubKey, err := cryptography.GenerateKeyPair()
 	if err != nil {
 		return nil, err
 	}
@@ -200,64 +121,38 @@ func (i *Identity) Encrypt(plaintext []byte, ratchet []byte) ([]byte, error) {
 	}
 
 	// Generate shared secret
-	sharedSecret, err := curve25519.X25519(ephemeralPrivKey, targetKey)
+	sharedSecret, err := cryptography.DeriveSharedSecret(ephemeralPrivKey, targetKey)
 	if err != nil {
 		return nil, err
 	}
 
-	// Derive encryption key using HKDF
-	kdf := hkdf.New(sha256.New, sharedSecret, i.GetSalt(), i.GetContext())
-	key := make([]byte, 32)
-	if _, err := io.ReadFull(kdf, key); err != nil {
-		return nil, err
-	}
-
-	// Encrypt using AES-128-CBC with PKCS7 padding
-	block, err := aes.NewCipher(key[:16]) // Use AES-128
+	// Derive encryption key
+	key, err := cryptography.DeriveKey(sharedSecret, i.GetSalt(), i.GetContext(), 32)
 	if err != nil {
 		return nil, err
 	}
 
-	// Add PKCS7 padding
-	padding := aes.BlockSize - len(plaintext)%aes.BlockSize
-	padtext := make([]byte, len(plaintext)+padding)
-	copy(padtext, plaintext)
-	for i := len(plaintext); i < len(padtext); i++ {
-		padtext[i] = byte(padding)
-	}
-
-	// Generate IV
-	iv := make([]byte, aes.BlockSize)
-	if _, err := io.ReadFull(rand.Reader, iv); err != nil {
+	// Encrypt data
+	ciphertext, err := cryptography.EncryptAESCBC(key[:16], plaintext)
+	if err != nil {
 		return nil, err
 	}
-
-	// Encrypt
-	mode := cipher.NewCBCEncrypter(block, iv)
-	ciphertext := make([]byte, len(padtext))
-	mode.CryptBlocks(ciphertext, padtext)
 
 	// Calculate HMAC
-	h := hmac.New(sha256.New, key)
-	h.Write(append(ephemeralPubKey, append(iv, ciphertext...)...))
-	mac := h.Sum(nil)
+	mac := cryptography.ComputeHMAC(key, append(ephemeralPubKey, ciphertext...))
 
-	// Combine all components into final token
-	token := make([]byte, 0, len(ephemeralPubKey)+len(iv)+len(ciphertext)+len(mac))
+	// Combine components
+	token := make([]byte, 0, len(ephemeralPubKey)+len(ciphertext)+len(mac))
 	token = append(token, ephemeralPubKey...)
-	token = append(token, iv...)
 	token = append(token, ciphertext...)
 	token = append(token, mac...)
 
-	log.Printf("[DEBUG-7] Encryption completed successfully")
 	return token, nil
 }
 
 func (i *Identity) Hash() []byte {
-	h := sha256.New()
-	h.Write(i.GetPublicKey())
-	fullHash := h.Sum(nil)
-	return fullHash[:TRUNCATED_HASHLENGTH/8]
+	hash := cryptography.Hash(i.GetPublicKey())
+	return hash[:TRUNCATED_HASHLENGTH/8]
 }
 
 func TruncatedHash(data []byte) []byte {
@@ -483,110 +378,55 @@ func (i *Identity) tryRatchetDecryption(peerPubBytes, ciphertext, ratchet []byte
 	ratchetPriv := ratchet
 
 	// Get ratchet ID
-	ratchetPubBytes, err := curve25519.X25519(ratchetPriv, curve25519.Basepoint)
+	ratchetPubBytes, err := curve25519.X25519(ratchetPriv, cryptography.GetBasepoint())
 	if err != nil {
 		log.Printf("[DEBUG-7] Failed to generate ratchet public key: %v", err)
 		return nil, nil, err
 	}
 	ratchetID := i.GetRatchetID(ratchetPubBytes)
 
-	log.Printf("[DEBUG-7] Decrypting with ratchet ID: %x", ratchetID)
-
-	// Generate shared key
-	sharedKey, err := curve25519.X25519(ratchetPriv, peerPubBytes)
+	sharedSecret, err := cryptography.DeriveSharedSecret(ratchet, peerPubBytes)
 	if err != nil {
-		log.Printf("[DEBUG-7] Failed to generate shared key: %v", err)
 		return nil, nil, err
 	}
 
-	// Derive key using HKDF
-	hkdfReader := hkdf.New(sha256.New, sharedKey, i.GetSalt(), i.GetContext())
-	derivedKey := make([]byte, 32)
-	if _, err := io.ReadFull(hkdfReader, derivedKey); err != nil {
-		log.Printf("[DEBUG-7] Failed to derive key: %v", err)
-		return nil, nil, err
-	}
-
-	// Create AES cipher
-	block, err := aes.NewCipher(derivedKey)
+	key, err := cryptography.DeriveKey(sharedSecret, i.GetSalt(), i.GetContext(), 32)
 	if err != nil {
-		log.Printf("[DEBUG-7] Failed to create cipher: %v", err)
 		return nil, nil, err
 	}
 
-	// Extract IV and decrypt
-	if len(ciphertext) < aes.BlockSize {
-		log.Printf("[DEBUG-7] Ciphertext too short")
-		return nil, nil, errors.New("ciphertext too short")
+	plaintext, err := cryptography.DecryptAESCBC(key, ciphertext)
+	if err != nil {
+		return nil, nil, err
 	}
 
-	iv := ciphertext[:aes.BlockSize]
-	actualCiphertext := ciphertext[aes.BlockSize:]
-
-	if len(actualCiphertext)%aes.BlockSize != 0 {
-		log.Printf("[DEBUG-7] Ciphertext is not a multiple of block size")
-		return nil, nil, errors.New("ciphertext is not a multiple of block size")
-	}
-
-	// Decrypt
-	mode := cipher.NewCBCDecrypter(block, iv)
-	plaintext := make([]byte, len(actualCiphertext))
-	mode.CryptBlocks(plaintext, actualCiphertext)
-
-	// Remove padding
-	padding := int(plaintext[len(plaintext)-1])
-	if padding > aes.BlockSize || padding == 0 {
-		log.Printf("[DEBUG-7] Invalid padding")
-		return nil, nil, errors.New("invalid padding")
-	}
-
-	for i := len(plaintext) - padding; i < len(plaintext); i++ {
-		if plaintext[i] != byte(padding) {
-			log.Printf("[DEBUG-7] Invalid padding")
-			return nil, nil, errors.New("invalid padding")
-		}
-	}
-
-	log.Printf("[DEBUG-7] Decrypted successfully")
-	return plaintext[:len(plaintext)-padding], ratchetID, nil
+	return plaintext, ratchetID, nil
 }
 
 func (i *Identity) EncryptWithHMAC(plaintext []byte, key []byte) ([]byte, error) {
-	// Encrypt with AES-CBC
-	ciphertext, err := encryptAESCBC(key, plaintext)
+	ciphertext, err := cryptography.EncryptAESCBC(key, plaintext)
 	if err != nil {
 		return nil, err
 	}
 
-	// Generate HMAC
-	h := hmac.New(sha256.New, key)
-	h.Write(ciphertext)
-	mac := h.Sum(nil)
-
-	// Combine ciphertext and HMAC
+	mac := cryptography.ComputeHMAC(key, ciphertext)
 	return append(ciphertext, mac...), nil
 }
 
 func (i *Identity) DecryptWithHMAC(data []byte, key []byte) ([]byte, error) {
-	if len(data) < sha256.Size {
+	if len(data) < cryptography.SHA256Size {
 		return nil, errors.New("data too short")
 	}
 
-	// Split HMAC and ciphertext
-	macStart := len(data) - sha256.Size
+	macStart := len(data) - cryptography.SHA256Size
 	ciphertext := data[:macStart]
 	messageMAC := data[macStart:]
 
-	// Verify HMAC
-	h := hmac.New(sha256.New, key)
-	h.Write(ciphertext)
-	expectedMAC := h.Sum(nil)
-	if !hmac.Equal(messageMAC, expectedMAC) {
+	if !cryptography.ValidateHMAC(key, ciphertext, messageMAC) {
 		return nil, errors.New("invalid HMAC")
 	}
 
-	// Decrypt
-	return decryptAESCBC(key, ciphertext)
+	return cryptography.DecryptAESCBC(key, ciphertext)
 }
 
 func (i *Identity) ToFile(path string) error {
@@ -664,7 +504,7 @@ func (i *Identity) GetContext() []byte {
 }
 
 func (i *Identity) GetRatchetID(ratchetPubBytes []byte) []byte {
-	hash := sha256.Sum256(ratchetPubBytes)
+	hash := cryptography.Hash(ratchetPubBytes)
 	return hash[:NAME_HASH_LENGTH/8]
 }
 
