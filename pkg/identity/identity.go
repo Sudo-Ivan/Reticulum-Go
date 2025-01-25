@@ -699,3 +699,13 @@ func (i *Identity) GetNameHash() []byte {
 	// Return first 10 bytes (NAME_HASH_LENGTH/8)
 	return fullHash[:NAME_HASH_LENGTH/8]
 }
+
+// GetEncryptionKey returns the X25519 public key used for encryption
+func (i *Identity) GetEncryptionKey() []byte {
+	return i.publicKey
+}
+
+// GetSigningKey returns the Ed25519 public key used for signing
+func (i *Identity) GetSigningKey() []byte {
+	return i.verificationKey
+}
