@@ -1,0 +1,15 @@
+version: '3'
+
+services:
+  nomadnet:
+    image: ghcr.io/markqvist/nomadnet:master
+    volumes:
+      - ./go-rns-network/nomadnetwork/:/root/.nomadnetwork/
+      - ./go-rns-network/reticulum/:/root/.reticulum/
+    command: --daemon --console
+    networks:
+      - reticulum-go-net
+
+networks:
+  reticulum-go-net:
+    driver: bridge

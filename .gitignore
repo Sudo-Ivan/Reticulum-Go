@@ -1,6 +1,16 @@
 logs/
+*.log
 
 .env
 .json
 
 bin/
+
+RNS/
+
+test-network/go-rns-network/reticulum/storage/
+test-network/go-rns-network/reticulum/interfaces/
+test-network/go-rns-network/nomadnetwork
+
+/test-network/go-rns-network/
+/test-network/go-rns-network-client/
