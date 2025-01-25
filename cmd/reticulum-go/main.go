@@ -47,7 +47,7 @@ const (
 	DEBUG_TRACE           = 5    // Very detailed tracing
 	DEBUG_PACKETS         = 6    // Packet-level details
 	DEBUG_ALL             = 7    // Everything including identity operations
-	APP_NAME              = "Go Client"
+	APP_NAME              = "Go-Client"
 	APP_ASPECT            = "node"
 )
 
@@ -107,6 +107,10 @@ func NewReticulum(cfg *common.ReticulumConfig) (*Reticulum, error) {
 		return nil, fmt.Errorf("failed to create destination: %v", err)
 	}
 	debugLog(DEBUG_INFO, "Created destination with hash: %x", dest.GetHash())
+
+	// Set default app data for announces
+	appData := []byte(fmt.Sprintf(`{"app":"%s","aspect":"%s","version":"0.1.0"}`, APP_NAME, APP_ASPECT))
+	dest.SetDefaultAppData(appData)
 
 	// Enable destination features
 	dest.AcceptsLinks(true)
@@ -286,20 +290,20 @@ func main() {
 		debugLog(2, "No interfaces configured, adding default TCP interfaces")
 		cfg.Interfaces = make(map[string]*common.InterfaceConfig)
 
-		cfg.Interfaces["amsterdam"] = &common.InterfaceConfig{
+		cfg.Interfaces["Go-RNS-Testnet"] = &common.InterfaceConfig{
 			Type:       "TCPClientInterface",
 			Enabled:    true,
-			TargetHost: "amsterdam.connect.reticulum.network",
-			TargetPort: 4965,
-			Name:       "amsterdam",
+			TargetHost: "127.0.0.1",
+			TargetPort: 4242,
+			Name:       "Go-RNS-Testnet",
 		}
 
-		cfg.Interfaces["btb"] = &common.InterfaceConfig{
+		cfg.Interfaces["Quad4 TCP"] = &common.InterfaceConfig{
 			Type:       "TCPClientInterface",
 			Enabled:    true,
-			TargetHost: "reticulum.betweentheborders.com",
+			TargetHost: "rns.quad4.io",
 			TargetPort: 4242,
-			Name:       "btb",
+			Name:       "Quad4 TCP",
 		}
 	}
 
@@ -444,13 +448,12 @@ func initializeDirectories() error {
 func (r *Reticulum) Start() error {
 	debugLog(2, "Starting Reticulum...")
 
-	// Start transport first
 	if err := r.transport.Start(); err != nil {
 		return fmt.Errorf("failed to start transport: %v", err)
 	}
 	debugLog(3, "Transport started successfully")
 
-	// Start interfaces and set up handlers
+	// Start interfaces
 	for _, iface := range r.interfaces {
 		debugLog(2, "Starting interface %s...", iface.GetName())
 		if err := iface.Start(); err != nil {
@@ -467,22 +470,21 @@ func (r *Reticulum) Start() error {
 		debugLog(3, "Interface %s started successfully", iface.GetName())
 	}
 
-	// Create initial announce
+	// Wait for interfaces to initialize
+	time.Sleep(2 * time.Second)
+
+	// Send initial announce once per interface
 	initialAnnounce, err := announce.NewAnnounce(
 		r.identity,
-		[]byte("Reticulum-Go"),
-		nil,   // ratchetID
-		false, // pathResponse
+		createAppData(r.config.AppName, r.config.AppAspect),
+		nil,
+		false,
 		r.config,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to create announce: %v", err)
 	}
 
-	// Wait briefly for interfaces to initialize
-	time.Sleep(2 * time.Second)
-
-	// Send initial announces
 	for _, iface := range r.interfaces {
 		if netIface, ok := iface.(common.NetworkInterface); ok {
 			if netIface.IsEnabled() && netIface.IsOnline() {
@@ -490,11 +492,13 @@ func (r *Reticulum) Start() error {
 				if err := initialAnnounce.Propagate([]common.NetworkInterface{netIface}); err != nil {
 					debugLog(1, "Failed to send initial announce on interface %s: %v", netIface.GetName(), err)
 				}
+				// Add delay between interfaces
+				time.Sleep(100 * time.Millisecond)
 			}
 		}
 	}
 
-	// Start periodic announce goroutine
+	// Start periodic announce goroutine with rate limiting
 	go func() {
 		ticker := time.NewTicker(ANNOUNCE_RATE_TARGET * time.Second)
 		defer ticker.Stop()
@@ -504,31 +508,31 @@ func (r *Reticulum) Start() error {
 			announceCount++
 			debugLog(3, "Starting periodic announce cycle #%d", announceCount)
 
-			// Create fresh announce for each cycle
 			periodicAnnounce, err := announce.NewAnnounce(
 				r.identity,
-				[]byte("Reticulum-Go"),
-				nil,   // ratchetID
-				false, // pathResponse
-				r.config,
+				createAppData(r.config.AppName, r.config.AppAspect),
+					nil,
+					false,
+					r.config,
 			)
 			if err != nil {
 				debugLog(1, "Failed to create periodic announce: %v", err)
 				continue
 			}
 
+			// Send to each interface with rate limiting
 			for _, iface := range r.interfaces {
 				if netIface, ok := iface.(common.NetworkInterface); ok {
 					if netIface.IsEnabled() && netIface.IsOnline() {
+						// Apply rate limiting after grace period
+						if announceCount > ANNOUNCE_RATE_GRACE {
+							time.Sleep(time.Duration(ANNOUNCE_RATE_PENALTY) * time.Second)
+						}
+
 						debugLog(2, "Sending periodic announce on interface %s", netIface.GetName())
 						if err := periodicAnnounce.Propagate([]common.NetworkInterface{netIface}); err != nil {
 							debugLog(1, "Failed to send periodic announce on interface %s: %v", netIface.GetName(), err)
 							continue
-						}
-
-						// Apply rate limiting after grace period
-						if announceCount > ANNOUNCE_RATE_GRACE {
-							time.Sleep(time.Duration(ANNOUNCE_RATE_PENALTY) * time.Second)
 						}
 					}
 				}
@@ -536,7 +540,6 @@ func (r *Reticulum) Start() error {
 		}
 	}()
 
-	// Start interface monitoring
 	go r.monitorInterfaces()
 
 	debugLog(2, "Reticulum started successfully")
@@ -650,4 +653,26 @@ func (h *AnnounceHandler) ReceivePathResponses() bool {
 
 func (r *Reticulum) GetDestination() *destination.Destination {
 	return r.destination
+}
+
+func createAppData(appName, appAspect string) []byte {
+	nameString := fmt.Sprintf("%s.%s", appName, appAspect)
+
+	// Create MessagePack array with 2 elements
+	appData := []byte{0x92} // Fix array with 2 elements
+
+	// First element: name string (always use str 8 format for consistency)
+	nameBytes := []byte(nameString)
+	appData = append(appData, 0xd9)                 // str 8 format
+	appData = append(appData, byte(len(nameBytes))) // length
+	appData = append(appData, nameBytes...)         // string data
+
+	// Second element: version string (always use str 8 format for consistency)
+	version := "0.1.0"
+	versionBytes := []byte(version)
+	appData = append(appData, 0xd9)                    // str 8 format
+	appData = append(appData, byte(len(versionBytes))) // length
+	appData = append(appData, versionBytes...)         // string data
+
+	return appData
 }
