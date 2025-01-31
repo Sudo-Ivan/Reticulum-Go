@@ -1,12 +1,15 @@
 package transport
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
+	"log/slog"
 	mathrand "math/rand"
 	"net"
 	"sync"
@@ -618,7 +621,7 @@ func SendAnnounce(packet []byte) error {
 
 func (t *Transport) HandlePacket(data []byte, iface common.NetworkInterface) {
 	if len(data) < 2 {
-		log.Printf("[DEBUG-3] Dropping packet: insufficient length (%d bytes)", len(data))
+		slog.Debug("Dropping packet: insufficient length", "length", len(data))
 		return
 	}
 
@@ -629,32 +632,36 @@ func (t *Transport) HandlePacket(data []byte, iface common.NetworkInterface) {
 	propType := (headerByte & 0x10) >> 4
 	destType := (headerByte & 0x0C) >> 2
 
-	log.Printf("[DEBUG-4] Packet received - Type: 0x%02x, Header: %d, Context: %d, PropType: %d, DestType: %d, Size: %d bytes",
-		packetType, headerType, contextFlag, propType, destType, len(data))
-	log.Printf("[DEBUG-5] Interface: %s, Raw header: 0x%02x", iface.GetName(), headerByte)
-
+	slog.Debug("Packet received",
+		"type", fmt.Sprintf("0x%02x"), packetType,
+		"header", headerType,
+		"context", contextFlag,
+		"proptype", propType,
+		"desttype", destType,
+		"size", len(data))
+	slog.Log(context.Background(), slog.LevelDebug-1, "Packet received on", "interface", iface.GetName(), "raw header", headerByte)
 	if tcpIface, ok := iface.(*interfaces.TCPClientInterface); ok {
 		tcpIface.UpdateStats(uint64(len(data)), true)
-		log.Printf("[DEBUG-6] Updated TCP interface stats - RX bytes: %d", len(data))
+		slog.Log(context.Background(), slog.LevelDebug-2, "Updated TCP interface stats ", "rx bytes", len(data))
 	}
 
 	switch packetType {
 	case PACKET_TYPE_ANNOUNCE:
-		log.Printf("[DEBUG-4] Processing announce packet")
+		slog.Debug("Processing announce packet")
 		if err := t.handleAnnouncePacket(data, iface); err != nil {
-			log.Printf("[DEBUG-3] Announce handling failed: %v", err)
+			slog.Info("Announce handling failed", "err", err)
 		}
 	case PACKET_TYPE_LINK:
-		log.Printf("[DEBUG-4] Processing link packet")
+		slog.Debug("Processing link packet")
 		t.handleLinkPacket(data[1:], iface)
 	case 0x03:
-		log.Printf("[DEBUG-4] Processing path response")
+		slog.Debug("Processing path response")
 		t.handlePathResponse(data[1:], iface)
 	case 0x00:
-		log.Printf("[DEBUG-4] Processing transport packet")
+		slog.Debug("Processing transport packet")
 		t.handleTransportPacket(data[1:], iface)
 	default:
-		log.Printf("[DEBUG-3] Unknown packet type 0x%02x from %s", packetType, iface.GetName())
+		slog.Info("Unknown packet", "type", fmt.Sprintf("0x%02x", packetType), "iface", iface.GetName())
 	}
 }
 
@@ -675,9 +682,9 @@ func (t *Transport) handleAnnouncePacket(data []byte, iface common.NetworkInterf
 	destType := (headerByte1 & 0x0C) >> 2    // Destination type in next 2 bits
 	packetType := headerByte1 & 0x03         // Packet type in lowest 2 bits
 
-	log.Printf("[DEBUG-5] Announce header: IFAC=%d, headerType=%d, context=%d, propType=%d, destType=%d, packetType=%d",
-		ifacFlag, headerType, contextFlag, propType, destType, packetType)
-
+	slog.Debug("Announce header", "IFAC", ifacFlag, "headerType", headerType,
+		"context", contextFlag, "propType", propType,
+		"destType", destType, "packetType", packetType)
 	// Skip IFAC code if present
 	startIdx := 2
 	if ifacFlag == 1 {
@@ -698,11 +705,13 @@ func (t *Transport) handleAnnouncePacket(data []byte, iface common.NetworkInterf
 
 	// Extract fields
 	addresses := data[startIdx : startIdx+addrSize]
-	context := data[startIdx+addrSize]
+	ctx := data[startIdx+addrSize]
 	payload := data[startIdx+addrSize+1:]
 
-	log.Printf("[DEBUG-6] Addresses: %x", addresses)
-	log.Printf("[DEBUG-7] Context: %02x, Payload length: %d", context, len(payload))
+	slog.Log(context.Background(), slog.LevelDebug-2, "Announce data",
+		"addresses", hex.EncodeToString(addresses))
+	slog.Log(context.Background(), slog.LevelDebug-3, "Announce context",
+		"context", fmt.Sprintf("%02x", ctx), "payload length", len(payload))
 
 	// Process payload (should contain pubkey + app data)
 	if len(payload) < 32 { // Minimum size for pubkey
@@ -725,7 +734,8 @@ func (t *Transport) handleAnnouncePacket(data []byte, iface common.NetworkInterf
 	t.mutex.Lock()
 	if _, seen := t.seenAnnounces[hashStr]; seen {
 		t.mutex.Unlock()
-		log.Printf("[DEBUG-7] Ignoring duplicate announce %x", announceHash[:8])
+		slog.Log(context.Background(), slog.LevelDebug-3, "Ignoring duplicate announce",
+			"hash", fmt.Sprintf("%x", announceHash[:8]))
 		return nil
 	}
 	t.seenAnnounces[hashStr] = true
@@ -733,7 +743,7 @@ func (t *Transport) handleAnnouncePacket(data []byte, iface common.NetworkInterf
 
 	// Don't forward if max hops reached
 	if hopCount >= MAX_HOPS {
-		log.Printf("[DEBUG-7] Announce exceeded max hops: %d", hopCount)
+		slog.Log(context.Background(), slog.LevelDebug-3, "Announce exceeded max hops", "hops", hopCount)
 		return nil
 	}
 
@@ -743,7 +753,7 @@ func (t *Transport) handleAnnouncePacket(data []byte, iface common.NetworkInterf
 
 	// Check bandwidth allocation for announces
 	if !t.announceRate.Allow() {
-		log.Printf("[DEBUG-7] Announce rate limit exceeded, queuing...")
+		slog.Log(context.Background(), slog.LevelDebug-3, "Announce rate limit exceeded, queuing...")
 		return nil
 	}
 
@@ -757,9 +767,9 @@ func (t *Transport) handleAnnouncePacket(data []byte, iface common.NetworkInterf
 			continue
 		}
 
-		log.Printf("[DEBUG-7] Forwarding announce on interface %s", name)
+		slog.Log(context.Background(), slog.LevelDebug-3, "Forwarding announce", "iface", name)
 		if err := outIface.Send(data, ""); err != nil {
-			log.Printf("[DEBUG-7] Failed to forward announce on %s: %v", name, err)
+			slog.Log(context.Background(), slog.LevelDebug-3, "Failed to forward announce", "iface", name, "err", err)
 			lastErr = err
 		}
 	}
@@ -772,7 +782,7 @@ func (t *Transport) handleAnnouncePacket(data []byte, iface common.NetworkInterf
 
 func (t *Transport) handleLinkPacket(data []byte, iface common.NetworkInterface) {
 	if len(data) < 40 {
-		log.Printf("[DEBUG-3] Dropping link packet: insufficient length (%d bytes)", len(data))
+		slog.Debug("Dropping link packet: insufficient length", "length", len(data))
 		return
 	}
 
@@ -780,27 +790,28 @@ func (t *Transport) handleLinkPacket(data []byte, iface common.NetworkInterface)
 	timestamp := binary.BigEndian.Uint64(data[32:40])
 	payload := data[40:]
 
-	log.Printf("[DEBUG-5] Link packet - Destination: %x, Timestamp: %d, Payload: %d bytes",
-		dest, timestamp, len(payload))
+	slog.Log(context.Background(), slog.LevelDebug-1, "Link packet",
+		"destination", fmt.Sprintf("%x", dest), "timestamp", timestamp,
+		"payload length", len(payload))
 
 	if t.HasPath(dest) {
 		nextHop := t.NextHop(dest)
 		nextIfaceName := t.NextHopInterface(dest)
-		log.Printf("[DEBUG-6] Found path - Next hop: %x, Interface: %s", nextHop, nextIfaceName)
-
+		slog.Log(context.Background(), slog.LevelDebug-2, " Found path",
+			"next hop", fmt.Sprintf("%x", nextHop), "iface", nextIfaceName)
 		if nextIfaceName != iface.GetName() {
 			if nextIface, ok := t.interfaces[nextIfaceName]; ok {
-				log.Printf("[DEBUG-7] Forwarding link packet to %s", nextIfaceName)
+				slog.Log(context.Background(), slog.LevelDebug-3, "Forwarding link packet", "iface", nextIfaceName)
 				nextIface.Send(data, string(nextHop))
 			}
 		}
 	}
 
 	if link := t.findLink(dest); link != nil {
-		log.Printf("[DEBUG-6] Updating link timing - Last inbound: %v", time.Unix(int64(timestamp), 0))
+		slog.Log(context.Background(), slog.LevelDebug-2, "Updating link timing", "last inbound", time.Unix(int64(timestamp), 0))
 		link.lastInbound = time.Unix(int64(timestamp), 0)
 		if link.packetCb != nil {
-			log.Printf("[DEBUG-7] Executing packet callback with %d bytes", len(payload))
+			slog.Log(context.Background(), slog.LevelDebug-2, "Executing packet callback", "size", len(payload))
 			p := &packet.Packet{Data: payload}
 			link.packetCb(payload, p)
 		}
@@ -845,33 +856,32 @@ func (t *Transport) SendPacket(p *packet.Packet) error {
 	t.mutex.RLock()
 	defer t.mutex.RUnlock()
 
-	log.Printf("[DEBUG-4] Sending packet - Type: 0x%02x, Header: %d", p.PacketType, p.HeaderType)
+	slog.Debug("Sending packet", "type", fmt.Sprintf("0x%02x", p.PacketType), "header", p.HeaderType)
 
 	data, err := p.Serialize()
 	if err != nil {
-		log.Printf("[DEBUG-3] Packet serialization failed: %v", err)
+		slog.Error("Packet serialization failed", "err", err)
 		return fmt.Errorf("failed to serialize packet: %w", err)
 	}
-	log.Printf("[DEBUG-5] Serialized packet size: %d bytes", len(data))
+	slog.Log(context.Background(), slog.LevelDebug-1, "Serialized packet", "size", len(data))
 
 	destHash := p.Addresses[:packet.AddressSize]
-	log.Printf("[DEBUG-6] Destination hash: %x", destHash)
+	slog.Log(context.Background(), slog.LevelDebug-2, "Destination", "hash", fmt.Sprintf("%x", destHash))
 
 	path, exists := t.paths[string(destHash)]
 	if !exists {
-		log.Printf("[DEBUG-3] No path found for destination %x", destHash)
+		slog.Warn("No path found to destination", "hash", fmt.Sprintf("%x", destHash))
 		return errors.New("no path to destination")
 	}
 
-	log.Printf("[DEBUG-5] Using path - Interface: %s, Next hop: %x, Hops: %d",
-		path.Interface.GetName(), path.NextHop, path.HopCount)
+	slog.Log(context.Background(), slog.LevelDebug-1, "Using path", "iface", path.Interface.GetName(),
+		"nexthop", fmt.Sprintf("%x", path.NextHop), "hops", path.HopCount)
 
 	if err := path.Interface.Send(data, ""); err != nil {
-		log.Printf("[DEBUG-3] Failed to send packet: %v", err)
+		slog.Warn("Failed to send packet", "err", err)
 		return fmt.Errorf("failed to send packet: %w", err)
 	}
-
-	log.Printf("[DEBUG-7] Packet sent successfully")
+	slog.Log(context.Background(), slog.LevelDebug-3, "Packet sent successfully")
 	return nil
 }
 
