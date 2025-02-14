@@ -7,7 +7,7 @@
 
 Aiming for full spec compatibility with the Python version 0.8.8+. 
 
-`Go 1.23.4`
+`Go 1.24.0`
 
 Packages:
 
