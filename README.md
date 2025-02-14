@@ -1,5 +1,8 @@
 # Reticulum-Go
 
+> [!NOTE]  
+> This is WIP and not ready as of FEB 2025, Code might be a little messy in some areas.
+
 [Reticulum Network](https://github.com/markqvist/Reticulum) implementation in Go.
 
 Aiming for full spec compatibility with the Python version 0.8.8+. 
@@ -19,12 +22,6 @@ make run
 ```
 
 ## To-Do List
-
-**1/2/25 Notes:** 
-
-Working on fixing announce packet creation/recieving. Right now there is bidirectional communication with the TCP interface and recieving packets. Several more things need to be cleaned up and added like config generation, storing ratches etc..
-
-![status update image](assets/status-update-2jan2025.png)
 
 ### Core Components (In Progress)
 - [x] Basic Configuration System
