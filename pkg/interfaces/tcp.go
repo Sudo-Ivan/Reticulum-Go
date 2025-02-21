@@ -2,7 +2,6 @@ package interfaces
 
 import (
 	"fmt"
-	"log"
 	"net"
 	"runtime"
 	"sync"
@@ -11,6 +10,7 @@ import (
 	"unsafe"
 
 	"github.com/Sudo-Ivan/reticulum-go/pkg/common"
+	"log/slog"
 )
 
 const (
@@ -108,11 +108,11 @@ func (tc *TCPClientInterface) Start() error {
 	switch runtime.GOOS {
 	case "linux":
 		if err := tc.setTimeoutsLinux(); err != nil {
-			log.Printf("[DEBUG-2] Failed to set Linux TCP timeouts: %v", err)
+			slog.Warn("Failed to set Linux TCP timeouts", "err", err)
 		}
 	case "darwin":
 		if err := tc.setTimeoutsOSX(); err != nil {
-			log.Printf("[DEBUG-2] Failed to set OSX TCP timeouts: %v", err)
+			slog.Warn("Failed to set OSX TCP timeouts", "err", err)
 		}
 	}
 
@@ -200,7 +200,7 @@ func (tc *TCPClientInterface) readLoop() {
 
 func (tc *TCPClientInterface) handlePacket(data []byte) {
 	if len(data) < 1 {
-		log.Printf("[DEBUG-7] Received invalid packet: empty")
+		slog.Debug("Received invalid packet: empty")
 		return
 	}
 
@@ -211,22 +211,22 @@ func (tc *TCPClientInterface) handlePacket(data []byte) {
 	tc.lastRx = lastRx
 	tc.mutex.Unlock()
 
-	log.Printf("[DEBUG-7] Received packet: type=0x%02x, size=%d bytes", tc.packetType, len(data))
+	slog.Debug("Received packet", "type", fmt.Sprintf("0x%02x", tc.packetType), "size", len(data))
 
 	payload := data[1:]
 
 	switch tc.packetType {
 	case 0x01: // Announce packet
-		log.Printf("[DEBUG-7] Processing announce packet: payload=%d bytes", len(payload))
+		slog.Debug("Processing announce packet", "size", len(payload))
 		if len(payload) >= 53 {
 			tc.BaseInterface.ProcessIncoming(payload)
 		} else {
-			log.Printf("[DEBUG-7] Announce packet too small: %d bytes", len(payload))
+			slog.Debug("Announce packet too small", "size", len(payload))
 		}
 	case 0x02: // Link packet
-		log.Printf("[DEBUG-7] Processing link packet: payload=%d bytes", len(payload))
+		slog.Debug("Processing link packet", "size", len(payload))
 		if len(payload) < 40 {
-			log.Printf("[DEBUG-7] Link packet too small: %d bytes", len(payload))
+			slog.Debug("Link packet too small", "size", len(payload))
 			return
 		}
 		tc.BaseInterface.ProcessIncoming(payload)
@@ -471,13 +471,13 @@ func (tc *TCPClientInterface) UpdateStats(bytes uint64, isRx bool) {
 	if isRx {
 		tc.RxBytes += bytes
 		tc.lastRx = now
-		log.Printf("[DEBUG-5] Interface %s RX stats: bytes=%d total=%d last=%v",
-			tc.Name, bytes, tc.RxBytes, tc.lastRx)
+		slog.Debug("RX stats", "iface", tc.Name, "bytes", bytes,
+			"total", tc.RxBytes, "last", tc.lastRx)
 	} else {
 		tc.TxBytes += bytes
 		tc.lastTx = now
-		log.Printf("[DEBUG-5] Interface %s TX stats: bytes=%d total=%d last=%v",
-			tc.Name, bytes, tc.TxBytes, tc.lastTx)
+		slog.Debug("TX stats", "iface", tc.Name, "bytes", bytes,
+			"total", tc.TxBytes, "last", tc.lastTx)
 	}
 }
 
@@ -631,7 +631,7 @@ func (ts *TCPServerInterface) Start() error {
 				if !ts.Online {
 					return // Normal shutdown
 				}
-				log.Printf("[DEBUG-2] Error accepting connection: %v", err)
+				slog.Warn("Error accepting connection", "err", err)
 				continue
 			}
 
@@ -714,8 +714,8 @@ func (ts *TCPServerInterface) ProcessOutgoing(data []byte) error {
 
 	for _, conn := range ts.connections {
 		if _, err := conn.Write(frame); err != nil {
-			log.Printf("[DEBUG-4] Error writing to connection %s: %v",
-				conn.RemoteAddr(), err)
+			slog.Warn("Error writing to connection",
+				"addr", conn.RemoteAddr(), "err", err)
 		}
 	}
 

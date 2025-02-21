@@ -1,9 +1,10 @@
 package interfaces
 
 import (
+	"context"
 	"encoding/binary"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"sync"
 	"time"
@@ -27,7 +28,7 @@ const (
 
 	PROPAGATION_RATE = 0.02 // 2% of interface bandwidth
 
-	DEBUG_LEVEL = 4 // Default debug level for interface logging
+	DEBUG_LEVEL = slog.LevelDebug // Default debug level for interface logging
 
 	// Debug levels
 	DEBUG_CRITICAL = 1
@@ -127,7 +128,7 @@ func (i *BaseInterface) ProcessIncoming(data []byte) {
 
 func (i *BaseInterface) ProcessOutgoing(data []byte) error {
 	if !i.Online || i.Detached {
-		log.Printf("[DEBUG-1] Interface %s: Cannot process outgoing packet - interface offline or detached", i.Name)
+		slog.Error("Cannot process outgoing packet - interface offline or detached", "iface", i.Name)
 		return fmt.Errorf("interface offline or detached")
 	}
 
@@ -135,7 +136,9 @@ func (i *BaseInterface) ProcessOutgoing(data []byte) error {
 	i.TxBytes += uint64(len(data))
 	i.mutex.Unlock()
 
-	log.Printf("[DEBUG-%d] Interface %s: Processed outgoing packet of %d bytes, total TX: %d", DEBUG_LEVEL, i.Name, len(data), i.TxBytes)
+	slog.Log(context.Background(), DEBUG_LEVEL,
+		"Processed outgoing packet", "size", len(data),
+		"total tx", i.TxBytes, "iface", i.Name)
 	return nil
 }
 
@@ -189,7 +192,10 @@ func (i *BaseInterface) Enable() {
 	i.Enabled = true
 	i.Online = true
 
-	log.Printf("[DEBUG-%d] Interface %s: State changed - Enabled: %v->%v, Online: %v->%v", DEBUG_INFO, i.Name, prevState, i.Enabled, !i.Online, i.Online)
+	slog.Log(context.Background(), DEBUG_LEVEL,
+		"State changed ", "iface", i.Name,
+		"prevstate", prevState, "state", i.Enabled,
+		"online", i.Online)
 }
 
 func (i *BaseInterface) Disable() {
@@ -197,7 +203,7 @@ func (i *BaseInterface) Disable() {
 	defer i.mutex.Unlock()
 	i.Enabled = false
 	i.Online = false
-	log.Printf("[DEBUG-2] Interface %s: Disabled and offline", i.Name)
+	slog.Debug("Interface disabled and offline", "iface", i.Name)
 }
 
 func (i *BaseInterface) GetName() string {
@@ -237,11 +243,14 @@ func (i *BaseInterface) Stop() error {
 }
 
 func (i *BaseInterface) Send(data []byte, address string) error {
-	log.Printf("[DEBUG-%d] Interface %s: Sending %d bytes to %s", DEBUG_LEVEL, i.Name, len(data), address)
+
+	slog.Log(context.Background(), DEBUG_LEVEL,
+		"Sending data", "size", len(data),
+		"destination", address, "iface", i.Name)
 
 	err := i.ProcessOutgoing(data)
 	if err != nil {
-		log.Printf("[DEBUG-1] Interface %s: Failed to send data: %v", i.Name, err)
+		slog.Error("Failed to send data", "iface", i.Name, "err", err)
 		return err
 	}
 
@@ -261,7 +270,9 @@ func (i *BaseInterface) GetBandwidthAvailable() bool {
 	timeSinceLastTx := now.Sub(i.lastTx)
 
 	if timeSinceLastTx > time.Second {
-		log.Printf("[DEBUG-%d] Interface %s: Bandwidth available (idle for %.2fs)", DEBUG_VERBOSE, i.Name, timeSinceLastTx.Seconds())
+		slog.Log(context.Background(), DEBUG_LEVEL, "Bandwidth available",
+			"idletime", timeSinceLastTx.Seconds(),
+			"iface", i.Name)
 		return true
 	}
 
@@ -270,7 +281,12 @@ func (i *BaseInterface) GetBandwidthAvailable() bool {
 	maxUsage := float64(i.Bitrate) * PROPAGATION_RATE
 
 	available := currentUsage < maxUsage
-	log.Printf("[DEBUG-%d] Interface %s: Bandwidth stats - Current: %.2f bps, Max: %.2f bps, Usage: %.1f%%, Available: %v", DEBUG_VERBOSE, i.Name, currentUsage, maxUsage, (currentUsage/maxUsage)*100, available)
+	slog.Log(context.Background(), DEBUG_LEVEL, "Bandwidth stats",
+		"iface", i.Name,
+		"current", fmt.Sprintf("%.2f bps", currentUsage),
+		"max", fmt.Sprintf("%.2f bps", maxUsage),
+		"usage", fmt.Sprintf("%.1f%%", (currentUsage/maxUsage)*100),
+		"available", available)
 
 	return available
 }
@@ -282,7 +298,11 @@ func (i *BaseInterface) updateBandwidthStats(bytes uint64) {
 	i.TxBytes += bytes
 	i.lastTx = time.Now()
 
-	log.Printf("[DEBUG-%d] Interface %s: Updated bandwidth stats - TX bytes: %d, Last TX: %v", DEBUG_LEVEL, i.Name, i.TxBytes, i.lastTx)
+	slog.Log(context.Background(), DEBUG_LEVEL, "Updated bandwidth stats ",
+		"iface", i.Name,
+		"tx bytes", i.TxBytes,
+		"last tx", i.lastTx)
+
 }
 
 type InterceptedInterface struct {
@@ -305,7 +325,7 @@ func (i *InterceptedInterface) Send(data []byte, addr string) error {
 	// Call interceptor if provided
 	if i.interceptor != nil && len(data) > 0 {
 		if err := i.interceptor(data, i); err != nil {
-			log.Printf("[DEBUG-2] Failed to intercept outgoing packet: %v", err)
+			slog.Warn("Failed to intercept outgoing packet", "err", err)
 		}
 	}
 

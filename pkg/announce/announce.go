@@ -4,9 +4,10 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -113,34 +114,32 @@ func (a *Announce) Propagate(interfaces []common.NetworkInterface) error {
 	a.mutex.RLock()
 	defer a.mutex.RUnlock()
 
-	log.Printf("[DEBUG-7] Propagating announce across %d interfaces", len(interfaces))
+	slog.Debug("Propagating announce", "#interfaces", len(interfaces))
 
-	var packet []byte
 	if a.packet != nil {
-		log.Printf("[DEBUG-7] Using cached packet (%d bytes)", len(a.packet))
-		packet = a.packet
+		slog.Debug("Using cached packet", "size", len(a.packet))
 	} else {
-		log.Printf("[DEBUG-7] Creating new packet")
-		packet = a.CreatePacket()
-		a.packet = packet
+		slog.Debug("Creating new packet")
+		a.packet = a.CreatePacket()
 	}
+	var packet = a.packet
 
 	for _, iface := range interfaces {
 		if !iface.IsEnabled() {
-			log.Printf("[DEBUG-7] Skipping disabled interface: %s", iface.GetName())
+			slog.Debug("Skipping disabled interface", "interface", iface.GetName())
 			continue
 		}
 		if !iface.GetBandwidthAvailable() {
-			log.Printf("[DEBUG-7] Skipping interface with insufficient bandwidth: %s", iface.GetName())
+			slog.Debug("Skipping interface with insufficient bandwidth:", "interface", iface.GetName())
 			continue
 		}
 
-		log.Printf("[DEBUG-7] Sending announce on interface %s", iface.GetName())
+		slog.Debug("Sending announce on interface", "interface", iface.GetName())
 		if err := iface.Send(packet, ""); err != nil {
-			log.Printf("[DEBUG-7] Failed to send on interface %s: %v", iface.GetName(), err)
+			slog.Warn("Failed to send on interface", "interface", iface.GetName(), "err", err)
 			return fmt.Errorf("failed to propagate on interface %s: %w", iface.GetName(), err)
 		}
-		log.Printf("[DEBUG-7] Successfully sent announce on interface %s", iface.GetName())
+		slog.Debug("Successfully sent announce", "interface", iface.GetName())
 	}
 
 	return nil
@@ -167,12 +166,12 @@ func (a *Announce) HandleAnnounce(data []byte) error {
 	a.mutex.Lock()
 	defer a.mutex.Unlock()
 
-	log.Printf("[DEBUG-7] Handling announce packet of %d bytes", len(data))
+	slog.Debug("Handling announce packet", "length", len(data))
 
 	// Minimum packet size validation (header(2) + desthash(16) + enckey(32) + signkey(32) + namehash(10) +
 	// randomhash(10) + signature(64) + min app data(3))
 	if len(data) < 169 {
-		log.Printf("[DEBUG-7] Invalid announce data length: %d bytes", len(data))
+		slog.Debug("Invalid announce data length", "length", len(data))
 		return errors.New("invalid announce data length")
 	}
 
@@ -187,13 +186,15 @@ func (a *Announce) HandleAnnounce(data []byte) error {
 	signature := data[102:166]
 	appData := data[166:]
 
-	log.Printf("[DEBUG-7] Announce fields: destHash=%x, encKey=%x, signKey=%x",
-		destHash, encKey, signKey)
-	log.Printf("[DEBUG-7] Name hash=%x, random hash=%x", nameHash, randomHash)
+	slog.Debug("Announce fields", "destHash", hex.EncodeToString(destHash),
+		"encKey", hex.EncodeToString(encKey),
+		"signKey", hex.EncodeToString(signKey),
+		"nameHash", hex.EncodeToString(nameHash),
+		"randomHash", hex.EncodeToString(randomHash))
 
 	// Validate hop count
 	if hopCount > MAX_HOPS {
-		log.Printf("[DEBUG-7] Announce exceeded max hops: %d", hopCount)
+		slog.Debug("Announce exceeded max hops: %d", hopCount)
 		return errors.New("announce exceeded maximum hop count")
 	}
 
@@ -287,7 +288,7 @@ func (a *Announce) CreatePacket() []byte {
 	// Create validation data for signature
 	validationData := make([]byte, 0)
 	validationData = append(validationData, a.destinationHash...)
-	validationData = append(validationData, pubKey[:32]...)  // Encryption key
+	validationData = append(validationData, pubKey[:32]...) // Encryption key
 	validationData = append(validationData, pubKey[32:]...) // Signing key
 	validationData = append(validationData, nameHash[:10]...)
 	validationData = append(validationData, randomBytes...)
@@ -336,11 +337,14 @@ func NewAnnouncePacket(pubKey []byte, appData []byte, announceID []byte) *Announ
 
 // NewAnnounce creates a new announce packet for a destination
 func NewAnnounce(identity *identity.Identity, appData []byte, ratchetID []byte, pathResponse bool, config *common.ReticulumConfig) (*Announce, error) {
-	log.Printf("[DEBUG-7] Creating new announce: appDataLen=%d, hasRatchet=%v, pathResponse=%v",
-		len(appData), ratchetID != nil, pathResponse)
+
+	slog.Debug("Creating new announce",
+		"appDataLen", len(appData),
+		"hasRatchet", ratchetID != nil,
+		"pathResponse", pathResponse)
 
 	if identity == nil {
-		log.Printf("[DEBUG-7] Error: nil identity provided")
+		slog.Warn("Error: nil identity provided")
 		return nil, errors.New("identity cannot be nil")
 	}
 
@@ -349,7 +353,7 @@ func NewAnnounce(identity *identity.Identity, appData []byte, ratchetID []byte, 
 	}
 
 	destHash := identity.Hash()
-	log.Printf("[DEBUG-7] Generated destination hash: %x", destHash)
+	slog.Debug("Generated destination", "hash", hex.EncodeToString(destHash))
 
 	a := &Announce{
 		identity:        identity,
@@ -363,16 +367,17 @@ func NewAnnounce(identity *identity.Identity, appData []byte, ratchetID []byte, 
 		config:          config,
 	}
 
-	log.Printf("[DEBUG-7] Created announce object: destHash=%x, hops=%d",
-		a.destinationHash, a.hops)
-
 	// Create initial packet
 	packet := a.CreatePacket()
 	a.packet = packet
 
 	// Generate hash
 	hash := a.Hash()
-	log.Printf("[DEBUG-7] Generated announce hash: %x", hash)
+
+	slog.Debug("Created announce object",
+		"destHash", hex.EncodeToString(a.destinationHash),
+		"hops", a.hops,
+		"announce hash", hex.EncodeToString(hash))
 
 	return a, nil
 }

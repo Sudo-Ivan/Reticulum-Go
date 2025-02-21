@@ -3,9 +3,9 @@ package destination
 import (
 	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
-	"fmt"
-	"log"
+	"log/slog"
 	"sync"
 
 	"github.com/Sudo-Ivan/reticulum-go/pkg/common"
@@ -80,15 +80,10 @@ type Destination struct {
 	requestHandlers map[string]*RequestHandler
 }
 
-func debugLog(level int, format string, v ...interface{}) {
-	log.Printf("[DEBUG-%d] %s", level, fmt.Sprintf(format, v...))
-}
-
 func New(id *identity.Identity, direction byte, destType byte, appName string, aspects ...string) (*Destination, error) {
-	debugLog(DEBUG_INFO, "Creating new destination: app=%s type=%d direction=%d", appName, destType, direction)
-
+	slog.Info("Creating new destination", "app", appName, "type", destType, "direction", direction)
 	if id == nil {
-		debugLog(DEBUG_ERROR, "Cannot create destination: identity is nil")
+		slog.Error("Cannot create destination: identity is nil")
 		return nil, errors.New("identity cannot be nil")
 	}
 
@@ -107,26 +102,24 @@ func New(id *identity.Identity, direction byte, destType byte, appName string, a
 
 	// Generate destination hash
 	d.hashValue = d.calculateHash()
-	debugLog(DEBUG_VERBOSE, "Created destination with hash: %x", d.hashValue)
+	slog.Debug("Created destination", "hash", hex.EncodeToString(d.hashValue))
 
 	return d, nil
 }
 
 func (d *Destination) calculateHash() []byte {
-	debugLog(DEBUG_TRACE, "Calculating hash for destination %s", d.ExpandName())
-
-	nameHash := sha256.Sum256([]byte(d.ExpandName()))
-	identityHash := sha256.Sum256(d.identity.GetPublicKey())
-
-	debugLog(DEBUG_ALL, "Name hash: %x", nameHash)
-	debugLog(DEBUG_ALL, "Identity hash: %x", identityHash)
-
-	combined := append(nameHash[:], identityHash[:]...)
-	finalHash := sha256.Sum256(combined)
-
-	truncated := finalHash[:16]
-	debugLog(DEBUG_VERBOSE, "Calculated destination hash: %x", truncated)
-
+	var (
+		nameHash     = sha256.Sum256([]byte(d.ExpandName()))
+		identityHash = sha256.Sum256(d.identity.GetPublicKey())
+		combined     = append(nameHash[:], identityHash[:]...)
+		finalHash    = sha256.Sum256(combined)
+		truncated    = finalHash[:16]
+	)
+	slog.Debug("Calculated hashes",
+		"destination", d.ExpandName(),
+		"namehash", hex.EncodeToString(nameHash[:]),
+		"identityHash", hex.EncodeToString(identityHash[:]),
+		"hash", hex.EncodeToString(truncated))
 	return truncated
 }
 
@@ -142,11 +135,11 @@ func (d *Destination) Announce(appData []byte) error {
 	d.mutex.Lock()
 	defer d.mutex.Unlock()
 
-	log.Printf("[DEBUG-4] Creating announce packet for destination %s", d.ExpandName())
+	slog.Info("Creating announce packet", "destination", d.ExpandName())
 
 	// If no specific appData provided, use default
 	if appData == nil {
-		log.Printf("[DEBUG-4] Using default app data for announce")
+		slog.Info("Using default app data for announce")
 		appData = d.defaultAppData
 	}
 
@@ -159,30 +152,32 @@ func (d *Destination) Announce(appData []byte) error {
 
 	// Add destination hash (16 bytes)
 	packet = append(packet, d.hashValue...)
-	log.Printf("[DEBUG-4] Added destination hash %x to announce", d.hashValue[:8])
 
 	// Add identity public key (32 bytes)
 	pubKey := d.identity.GetPublicKey()
 	packet = append(packet, pubKey...)
-	log.Printf("[DEBUG-4] Added public key %x to announce", pubKey[:8])
 
 	// Add app data with length prefix
 	appDataLen := make([]byte, 2)
 	binary.BigEndian.PutUint16(appDataLen, uint16(len(appData)))
 	packet = append(packet, appDataLen...)
 	packet = append(packet, appData...)
-	log.Printf("[DEBUG-4] Added %d bytes of app data to announce", len(appData))
+
+	slog.Debug("Building announce",
+		"desthash", hex.EncodeToString(d.hashValue[:8]),
+		"pubkey", hex.EncodeToString(pubKey[:8]),
+		"appdata length", len(appData))
 
 	// Add ratchet data if enabled
 	if d.ratchetsEnabled {
-		log.Printf("[DEBUG-4] Adding ratchet data to announce")
+		slog.Info("Adding ratchet data to announce")
 		ratchetKey := d.identity.GetCurrentRatchetKey()
 		if ratchetKey == nil {
-			log.Printf("[DEBUG-3] Failed to get current ratchet key")
+			slog.Warn("Failed to get current ratchet key")
 			return errors.New("failed to get current ratchet key")
 		}
 		packet = append(packet, ratchetKey...)
-		log.Printf("[DEBUG-4] Added ratchet key %x to announce", ratchetKey[:8])
+		slog.Info("Added ratchet announce", "key", hex.EncodeToString(ratchetKey[:8]))
 	}
 
 	// Sign the announce packet (64 bytes)
@@ -192,10 +187,9 @@ func (d *Destination) Announce(appData []byte) error {
 	}
 	signature := d.identity.Sign(signData)
 	packet = append(packet, signature...)
-	log.Printf("[DEBUG-4] Added signature to announce packet (total size: %d bytes)", len(packet))
 
 	// Send announce packet through transport
-	log.Printf("[DEBUG-4] Sending announce packet through transport layer")
+	slog.Info("[DEBUG-4] Sending announce packet through transport layer", "size", len(packet))
 	return transport.SendAnnounce(packet)
 }
 
@@ -317,32 +311,32 @@ func (d *Destination) DeregisterRequestHandler(path string) bool {
 
 func (d *Destination) Encrypt(plaintext []byte) ([]byte, error) {
 	if d.destType == PLAIN {
-		log.Printf("[DEBUG-4] Using plaintext transmission for PLAIN destination")
+		slog.Info("Using plaintext transmission for PLAIN destination")
 		return plaintext, nil
 	}
 
 	if d.identity == nil {
-		log.Printf("[DEBUG-3] Cannot encrypt: no identity available")
+		slog.Warn("Cannot encrypt: no identity available")
 		return nil, errors.New("no identity available for encryption")
 	}
 
-	log.Printf("[DEBUG-4] Encrypting %d bytes for destination type %d", len(plaintext), d.destType)
+	slog.Info("Encrypting data ", "size", len(plaintext), "destination type", d.destType)
 
 	switch d.destType {
 	case SINGLE:
 		recipientKey := d.identity.GetPublicKey()
-		log.Printf("[DEBUG-4] Encrypting for single recipient with key %x", recipientKey[:8])
+		slog.Info("Encrypting for single recipient", "key", hex.EncodeToString(recipientKey[:8]))
 		return d.identity.Encrypt(plaintext, recipientKey)
 	case GROUP:
 		key := d.identity.GetCurrentRatchetKey()
 		if key == nil {
-			log.Printf("[DEBUG-3] Cannot encrypt: no ratchet key available")
+			slog.Warn("Cannot encrypt: no ratchet key available")
 			return nil, errors.New("no ratchet key available")
 		}
-		log.Printf("[DEBUG-4] Encrypting for group with ratchet key %x", key[:8])
+		slog.Info("Encrypting for group with ratchet", "key", hex.EncodeToString(key[:8]))
 		return d.identity.EncryptWithHMAC(plaintext, key)
 	default:
-		log.Printf("[DEBUG-3] Unsupported destination type %d for encryption", d.destType)
+		slog.Warn("Unsupported destination type for encryption", "type", d.destType)
 		return nil, errors.New("unsupported destination type for encryption")
 	}
 }

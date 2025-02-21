@@ -2,11 +2,11 @@ package interfaces
 
 import (
 	"fmt"
-	"log"
 	"net"
 	"sync"
 
 	"github.com/Sudo-Ivan/reticulum-go/pkg/common"
+	"log/slog"
 )
 
 type UDPInterface struct {
@@ -183,7 +183,7 @@ func (ui *UDPInterface) readLoop() {
 		n, addr, err := ui.conn.ReadFromUDP(buffer)
 		if err != nil {
 			if !ui.IsDetached() {
-				log.Printf("UDP read error: %v", err)
+				slog.Warn("UDP read error", "err", err)
 			}
 			return
 		}
@@ -192,7 +192,7 @@ func (ui *UDPInterface) readLoop() {
 		ui.RxBytes += uint64(n)
 		ui.mutex.Unlock()
 
-		log.Printf("Received %d bytes from %s", n, addr.String())
+		slog.Debug("Received UDP data", "size", n, "from", addr.String())
 
 		if callback := ui.GetPacketCallback(); callback != nil {
 			callback(buffer[:n], ui)

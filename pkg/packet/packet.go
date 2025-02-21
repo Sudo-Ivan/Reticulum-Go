@@ -2,9 +2,10 @@ package packet
 
 import (
 	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"time"
 
 	"github.com/Sudo-Ivan/reticulum-go/pkg/identity"
@@ -111,29 +112,27 @@ func (p *Packet) Pack() error {
 		return nil
 	}
 
-	log.Printf("[DEBUG-6] Packing packet: type=%d, header=%d", p.PacketType, p.HeaderType)
-
 	// Create header byte
 	flags := byte(p.HeaderType<<6) | byte(p.ContextFlag<<5) |
 		byte(p.TransportType<<4) | byte(p.DestinationType<<2) | byte(p.PacketType)
 
 	header := []byte{flags, p.Hops}
-	log.Printf("[DEBUG-5] Created packet header: flags=%08b, hops=%d", flags, p.Hops)
+
+	slog.Debug("Creating packet", "type", p.PacketType, "header", p.HeaderType,
+		"flags", fmt.Sprintf("%08b", flags), "hops", p.Hops)
 
 	if p.HeaderType == HeaderType2 {
 		if p.TransportID == nil {
 			return errors.New("transport ID required for header type 2")
 		}
 		header = append(header, p.TransportID...)
-		log.Printf("[DEBUG-7] Added transport ID to header: %x", p.TransportID)
+		slog.Debug("Added transport ID to header", "id", hex.EncodeToString(p.TransportID))
 	}
 
 	header = append(header, p.DestinationHash...)
 	header = append(header, p.Context)
-	log.Printf("[DEBUG-6] Final header length: %d bytes", len(header))
 
 	p.Raw = append(header, p.Data...)
-	log.Printf("[DEBUG-5] Final packet size: %d bytes", len(p.Raw))
 
 	if len(p.Raw) > MTU {
 		return errors.New("packet size exceeds MTU")
@@ -141,7 +140,7 @@ func (p *Packet) Pack() error {
 
 	p.Packed = true
 	p.updateHash()
-	log.Printf("[DEBUG-7] Packet hash: %x", p.PacketHash)
+	slog.Debug("Pack done", "header size", len(header), "packet size", len(p.Raw), "hash", p.PacketHash)
 	return nil
 }
 
@@ -217,25 +216,28 @@ func (p *Packet) Serialize() ([]byte, error) {
 }
 
 func NewAnnouncePacket(destHash []byte, identity *identity.Identity, appData []byte, transportID []byte) (*Packet, error) {
-	log.Printf("[DEBUG-7] Creating new announce packet: destHash=%x, appData=%s", destHash, string(appData))
 
 	// Create combined public key
 	pubKey := identity.GetPublicKey()
-	log.Printf("[DEBUG-6] Using public key: %x", pubKey)
 
 	// Create signed data
 	signedData := append(destHash, pubKey...)
 	signedData = append(signedData, appData...)
-	log.Printf("[DEBUG-5] Created signed data (%d bytes)", len(signedData))
 
 	// Sign the data
 	signature := identity.Sign(signedData)
-	log.Printf("[DEBUG-6] Generated signature: %x", signature)
 
 	// Combine all data
 	data := append(pubKey, appData...)
 	data = append(data, signature...)
-	log.Printf("[DEBUG-5] Combined packet data (%d bytes)", len(data))
+
+	slog.Debug("Creating new announce packet",
+		"destHash", hex.EncodeToString(destHash),
+		"appData", string(appData),
+		"pubkey", hex.EncodeToString(pubKey),
+		"signature", signature,
+		"signed data size", len(signedData),
+		"combined size", len(data))
 
 	p := &Packet{
 		HeaderType:      HeaderType2,
@@ -245,6 +247,6 @@ func NewAnnouncePacket(destHash []byte, identity *identity.Identity, appData []b
 		Data:            data,
 	}
 
-	log.Printf("[DEBUG-4] Created announce packet: type=%d, header=%d", p.PacketType, p.HeaderType)
+	slog.Debug("Created announce packet", "type", p.PacketType, "header", p.HeaderType)
 	return p, nil
 }

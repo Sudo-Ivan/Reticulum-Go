@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Sudo-Ivan/reticulum-go/pkg/common"
+	"log/slog"
 )
 
 const (
@@ -90,7 +91,7 @@ func (ai *AutoInterface) Start() error {
 
 	for _, iface := range interfaces {
 		if err := ai.configureInterface(&iface); err != nil {
-			log.Printf("Failed to configure interface %s: %v", iface.Name, err)
+			slog.Warn("Failed to configure interface", "iface", iface.Name, "err", err)
 			continue
 		}
 	}
@@ -167,7 +168,7 @@ func (ai *AutoInterface) handleDiscovery(conn *net.UDPConn, ifaceName string) {
 	for {
 		n, remoteAddr, err := conn.ReadFromUDP(buf)
 		if err != nil {
-			log.Printf("Discovery read error: %v", err)
+			slog.Warn("Discovery read error", "err", err)
 			continue
 		}
 
@@ -181,7 +182,7 @@ func (ai *AutoInterface) handleData(conn *net.UDPConn) {
 		n, _, err := conn.ReadFromUDP(buf)
 		if err != nil {
 			if !ai.IsDetached() {
-				log.Printf("Data read error: %v", err)
+				slog.Warn("Data read error", "err", err)
 			}
 			return
 		}
@@ -210,7 +211,7 @@ func (ai *AutoInterface) handlePeerAnnounce(addr *net.UDPAddr, data []byte, ifac
 			ifaceName: ifaceName,
 			lastHeard: time.Now(),
 		}
-		log.Printf("Added peer %s on %s", peerAddr, ifaceName)
+		slog.Info("Added peer", "peer", peerAddr, "iface", ifaceName)
 	} else {
 		ai.peers[peerAddr].lastHeard = time.Now()
 	}
@@ -225,7 +226,7 @@ func (ai *AutoInterface) peerJobs() {
 		for addr, peer := range ai.peers {
 			if now.Sub(peer.lastHeard) > PEERING_TIMEOUT {
 				delete(ai.peers, addr)
-				log.Printf("Removed timed out peer %s", addr)
+				slog.Debug("Removed timed-out peer", "peer", addr)
 			}
 		}
 
@@ -253,7 +254,7 @@ func (ai *AutoInterface) Send(data []byte, address string) error {
 		}
 
 		if _, err := ai.outboundConn.WriteToUDP(data, addr); err != nil {
-			log.Printf("Failed to send to peer %s: %v", address, err)
+			slog.Warn("Failed to send to peer", "peer", address, "err", err)
 			continue
 		}
 	}
