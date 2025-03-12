@@ -287,7 +287,7 @@ func (a *Announce) CreatePacket() []byte {
 	// Create validation data for signature
 	validationData := make([]byte, 0)
 	validationData = append(validationData, a.destinationHash...)
-	validationData = append(validationData, pubKey[:32]...)  // Encryption key
+	validationData = append(validationData, pubKey[:32]...) // Encryption key
 	validationData = append(validationData, pubKey[32:]...) // Signing key
 	validationData = append(validationData, nameHash[:10]...)
 	validationData = append(validationData, randomBytes...)
