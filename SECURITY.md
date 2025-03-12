@@ -42,4 +42,6 @@ lh60DA==
 -----END PGP PUBLIC KEY BLOCK-----
 ```
 
+## Gosec Command
 
+`gosec ./cmd/* ./pkg/* ./internal/*`
