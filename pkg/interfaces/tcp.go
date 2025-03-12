@@ -6,9 +6,7 @@ import (
 	"net"
 	"runtime"
 	"sync"
-	"syscall"
 	"time"
-	"unsafe"
 
 	"github.com/Sudo-Ivan/reticulum-go/pkg/common"
 )
@@ -408,28 +406,6 @@ func (tc *TCPClientInterface) IsConnected() bool {
 	return tc.conn != nil && tc.Online && !tc.reconnecting
 }
 
-func getRTTFromSocket(fd uintptr) time.Duration {
-	var info syscall.TCPInfo
-	size := uint32(syscall.SizeofTCPInfo)
-
-	_, _, err := syscall.Syscall6(
-		syscall.SYS_GETSOCKOPT,
-		fd,
-		syscall.SOL_TCP,
-		syscall.TCP_INFO,
-		uintptr(unsafe.Pointer(&info)),
-		uintptr(unsafe.Pointer(&size)),
-		0,
-	)
-
-	if err != 0 {
-		return 0
-	}
-
-	// RTT is in microseconds, convert to Duration
-	return time.Duration(info.Rtt) * time.Microsecond
-}
-
 func (tc *TCPClientInterface) GetRTT() time.Duration {
 	tc.mutex.RLock()
 	defer tc.mutex.RUnlock()
@@ -439,13 +415,15 @@ func (tc *TCPClientInterface) GetRTT() time.Duration {
 	}
 
 	if tcpConn, ok := tc.conn.(*net.TCPConn); ok {
-		var rtt time.Duration
-		if info, err := tcpConn.SyscallConn(); err == nil {
-			info.Control(func(fd uintptr) {
-				rtt = getRTTFromSocket(fd)
-			})
-			return rtt
+		var rtt time.Duration = 0
+		if runtime.GOOS == "linux" {
+			if info, err := tcpConn.SyscallConn(); err == nil {
+				info.Control(func(fd uintptr) {
+					rtt = platformGetRTT(fd)
+				})
+			}
 		}
+		return rtt
 	}
 
 	return 0
