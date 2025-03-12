@@ -1,17 +1,8 @@
 # Reticulum-Go
 
-> [!NOTE]  
-> This is WIP and not ready as of MAR 2025, I am busy but will work on it when I am able to.
-
-[Reticulum Network](https://github.com/markqvist/Reticulum) implementation in Go.
+[Reticulum Network](https://github.com/markqvist/Reticulum) implementation in Go `1.24`.
 
 Aiming for full spec compatibility with the Python version 0.9.2. 
-
-`Go 1.24.0`
-
-External Packages:
-
-- `golang.org/x/crypto`
 
 # Testing
 
@@ -28,6 +19,10 @@ make run
 ```bash
 revive -config revive.toml -formatter friendly ./pkg/* ./cmd/* ./internal/*
 ```
+
+## External Packages
+
+- `golang.org/x/crypto` - Cryptographic primitives
 
 ## To-Do List
 
