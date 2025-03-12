@@ -1,11 +1,11 @@
 # Reticulum-Go
 
 > [!NOTE]  
-> This is WIP and not ready as of MAR 2025, I am busy but will work on when I am able to.
+> This is WIP and not ready as of MAR 2025, I am busy but will work on it when I am able to.
 
 [Reticulum Network](https://github.com/markqvist/Reticulum) implementation in Go.
 
-Aiming for full spec compatibility with the Python version 0.8.8+. 
+Aiming for full spec compatibility with the Python version 0.9.2. 
 
 `Go 1.24.0`
 
