@@ -1,7 +1,7 @@
 # Reticulum-Go
 
 > [!NOTE]  
-> This is WIP and not ready as of FEB 2025, Code might be a little messy in some areas.
+> This is WIP and not ready as of MAR 2025, I am busy but will work on when I am able to.
 
 [Reticulum Network](https://github.com/markqvist/Reticulum) implementation in Go.
 
@@ -186,13 +186,3 @@ make run
 - [ ] Remove default community interfaces in default config creation after testing
 - [ ] Optimize announce packet creation and caching
 - [ ] Improve debug logging system
-
-### Other
-- [ ] Rate limiting
-- [ ] QoS implementation?
-
-### Ivans Future Addon Packages
-- [ ] Post-quantum cryptographic primitives (separate package)
-- [ ] Hardware security module (HSM) support (separate package)
-- [ ] Encrypted storage for identities (separate package)
-- [ ] Defense against AI-guided Traffic Analysis (separate package)
