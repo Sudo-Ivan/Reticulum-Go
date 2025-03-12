@@ -1,6 +1,6 @@
 # Security Policy
 
-I use [Socket](https://socket.dev/) and [Deepsource](https://deepsource.com/) for this project.
+I use [Socket](https://socket.dev/), [Deepsource](https://deepsource.com/) and [gosec](https://github.com/securego/gosec) for this project.
 
 ## Cryptography Dependencies
 
