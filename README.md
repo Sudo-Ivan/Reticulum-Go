@@ -9,7 +9,7 @@ Aiming for full spec compatibility with the Python version 0.9.2.
 
 `Go 1.24.0`
 
-Packages:
+External Packages:
 
 - `golang.org/x/crypto`
 
@@ -19,6 +19,14 @@ Packages:
 make install
 make build
 make run
+```
+
+## Linter
+
+[Revive](https://github.com/mgechev/revive)
+
+```bash
+revive -config revive.toml -formatter friendly ./pkg/* ./cmd/* ./internal/*
 ```
 
 ## To-Do List
