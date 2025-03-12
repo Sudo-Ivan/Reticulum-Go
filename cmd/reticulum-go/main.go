@@ -511,9 +511,9 @@ func (r *Reticulum) Start() error {
 			periodicAnnounce, err := announce.NewAnnounce(
 				r.identity,
 				createAppData(r.config.AppName, r.config.AppAspect),
-					nil,
-					false,
-					r.config,
+				nil,
+				false,
+				r.config,
 			)
 			if err != nil {
 				debugLog(1, "Failed to create periodic announce: %v", err)
