@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"runtime"
 	"sync"
 	"syscall"
 	"time"
@@ -20,7 +21,6 @@ import (
 	"github.com/Sudo-Ivan/reticulum-go/pkg/interfaces"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/packet"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/transport"
-	testutils "github.com/Sudo-Ivan/reticulum-go/test-utilities"
 )
 
 var (
@@ -130,31 +130,6 @@ func NewReticulum(cfg *common.ReticulumConfig) (*Reticulum, error) {
 		destination:     dest,
 	}
 
-	// Initialize packet interceptor if enabled
-	var interceptor *testutils.PacketInterceptor
-	if *interceptPackets {
-		var err error
-		interceptor, err = testutils.NewPacketInterceptor(*interceptOutput)
-		if err != nil {
-			debugLog(DEBUG_ERROR, "Failed to initialize packet interceptor: %v", err)
-		} else {
-			debugLog(DEBUG_INFO, "Packet interception enabled")
-		}
-	}
-
-	// Create a wrapper for the packet callback that includes interception
-	packetCallbackWrapper := func(data []byte, iface common.NetworkInterface) {
-		if interceptor != nil {
-			if err := interceptor.InterceptIncoming(data, iface); err != nil {
-				debugLog(DEBUG_ERROR, "Failed to intercept incoming packet: %v", err)
-			}
-		}
-		// Call original callback
-		if r.transport != nil {
-			r.transport.HandlePacket(data, iface)
-		}
-	}
-
 	// Initialize interfaces from config
 	for name, ifaceConfig := range cfg.Interfaces {
 		if !ifaceConfig.Enabled {
@@ -196,15 +171,12 @@ func NewReticulum(cfg *common.ReticulumConfig) (*Reticulum, error) {
 			continue
 		}
 
-		// Set the wrapped packet callback
-		iface.SetPacketCallback(packetCallbackWrapper)
-
-		// Wrap interface for outgoing packet interception
-		if interceptor != nil {
-			iface = interfaces.NewInterceptedInterface(iface, func(data []byte, ni common.NetworkInterface) error {
-				return interceptor.InterceptOutgoing(data, ni)
-			})
-		}
+		// Set packet callback
+		iface.SetPacketCallback(func(data []byte, ni common.NetworkInterface) {
+			if r.transport != nil {
+				r.transport.HandlePacket(data, ni)
+			}
+		})
 
 		debugLog(2, "Configuring interface %s (type=%s)...", name, ifaceConfig.Type)
 		r.interfaces = append(r.interfaces, iface)
@@ -220,12 +192,6 @@ func (r *Reticulum) handleInterface(iface common.NetworkInterface) {
 	ch := channel.NewChannel(&transportWrapper{r.transport})
 	r.channels[iface.GetName()] = ch
 
-	// Get interceptor if enabled
-	var interceptor *testutils.PacketInterceptor
-	if *interceptPackets {
-		interceptor, _ = testutils.NewPacketInterceptor(*interceptOutput)
-	}
-
 	rw := buffer.CreateBidirectionalBuffer(
 		1,
 		2,
@@ -236,13 +202,6 @@ func (r *Reticulum) handleInterface(iface common.NetworkInterface) {
 			iface.ProcessIncoming(data)
 
 			if len(data) > 0 {
-				// Intercept incoming packet before processing
-				if interceptor != nil {
-					if err := interceptor.InterceptIncoming(data, iface); err != nil {
-						debugLog(DEBUG_ERROR, "Failed to intercept incoming packet: %v", err)
-					}
-				}
-
 				debugLog(DEBUG_TRACE, "Interface %s: Received packet type 0x%02x", iface.GetName(), data[0])
 				r.transport.HandlePacket(data, iface)
 			}
@@ -261,15 +220,20 @@ func (r *Reticulum) monitorInterfaces() {
 	for range ticker.C {
 		for _, iface := range r.interfaces {
 			if tcpClient, ok := iface.(*interfaces.TCPClientInterface); ok {
-				debugLog(DEBUG_VERBOSE, "Interface %s status - Connected: %v, RTT: %v, TX: %d bytes (%.2f Kbps), RX: %d bytes (%.2f Kbps)",
+				stats := fmt.Sprintf("Interface %s status - Connected: %v, TX: %d bytes (%.2f Kbps), RX: %d bytes (%.2f Kbps)",
 					iface.GetName(),
 					tcpClient.IsConnected(),
-					tcpClient.GetRTT(),
 					tcpClient.GetTxBytes(),
-					float64(tcpClient.GetTxBytes()*8)/(5*1024), // Calculate Kbps over 5s interval
+					float64(tcpClient.GetTxBytes()*8)/(5*1024),
 					tcpClient.GetRxBytes(),
 					float64(tcpClient.GetRxBytes()*8)/(5*1024),
 				)
+
+				if runtime.GOOS != "windows" {
+					stats = fmt.Sprintf("%s, RTT: %v", stats, tcpClient.GetRTT())
+				}
+
+				debugLog(DEBUG_VERBOSE, stats)
 			}
 		}
 	}
