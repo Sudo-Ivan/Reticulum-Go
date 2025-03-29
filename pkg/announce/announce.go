@@ -169,44 +169,108 @@ func (a *Announce) HandleAnnounce(data []byte) error {
 
 	log.Printf("[DEBUG-7] Handling announce packet of %d bytes", len(data))
 
-	// Minimum packet size validation (header(2) + desthash(16) + enckey(32) + signkey(32) + namehash(10) +
-	// randomhash(10) + signature(64) + min app data(3))
-	if len(data) < 169 {
-		log.Printf("[DEBUG-7] Invalid announce data length: %d bytes", len(data))
+	// Minimum packet size validation
+	// header(2) + desthash(16) + context(1) + enckey(32) + signkey(32) + namehash(10) +
+	// randomhash(10) + signature(64) + min app data(3)
+	if len(data) < 170 {
+		log.Printf("[DEBUG-7] Invalid announce data length: %d bytes (minimum 170)", len(data))
 		return errors.New("invalid announce data length")
 	}
 
-	// Parse fields
+	// Extract header and check packet type
 	header := data[:2]
+	if header[0]&0x03 != PACKET_TYPE_ANNOUNCE {
+		return errors.New("not an announce packet")
+	}
+
+	// Get hop count
 	hopCount := header[1]
-	destHash := data[2:18]
-	encKey := data[18:50]
-	signKey := data[50:82]
-	nameHash := data[82:92]
-	randomHash := data[92:102]
-	signature := data[102:166]
-	appData := data[166:]
-
-	log.Printf("[DEBUG-7] Announce fields: destHash=%x, encKey=%x, signKey=%x",
-		destHash, encKey, signKey)
-	log.Printf("[DEBUG-7] Name hash=%x, random hash=%x", nameHash, randomHash)
-
-	// Validate hop count
 	if hopCount > MAX_HOPS {
 		log.Printf("[DEBUG-7] Announce exceeded max hops: %d", hopCount)
 		return errors.New("announce exceeded maximum hop count")
 	}
 
-	// Create announced identity from public keys
+	// Parse the packet based on header type
+	headerType := (header[0] & 0b01000000) >> 6
+	var contextByte byte
+	var packetData []byte
+
+	if headerType == HEADER_TYPE_2 {
+		// Header type 2 format: header(2) + desthash(16) + transportid(16) + context(1) + data
+		if len(data) < 35 {
+			return errors.New("header type 2 packet too short")
+		}
+		destHash := data[2:18]
+		transportID := data[18:34]
+		contextByte = data[34]
+		packetData = data[35:]
+
+		log.Printf("[DEBUG-7] Header type 2 announce: destHash=%x, transportID=%x, context=%d",
+			destHash, transportID, contextByte)
+	} else {
+		// Header type 1 format: header(2) + desthash(16) + context(1) + data
+		if len(data) < 19 {
+			return errors.New("header type 1 packet too short")
+		}
+		destHash := data[2:18]
+		contextByte = data[18]
+		packetData = data[19:]
+
+		log.Printf("[DEBUG-7] Header type 1 announce: destHash=%x, context=%d",
+			destHash, contextByte)
+	}
+
+	// Now parse the data portion according to the spec
+	// Public Key (32) + Signing Key (32) + Name Hash (10) + Random Hash (10) + [Ratchet] + Signature (64) + App Data
+
+	if len(packetData) < 148 { // 32 + 32 + 10 + 10 + 64
+		return errors.New("announce data too short")
+	}
+
+	// Extract the components
+	encKey := packetData[:32]
+	signKey := packetData[32:64]
+	nameHash := packetData[64:74]
+	randomHash := packetData[74:84]
+
+	// The next field could be a ratchet (32 bytes) or signature (64 bytes)
+	// We need to detect this somehow or use a flag
+	// For now, assume no ratchet
+
+	signature := packetData[84:148]
+	appData := packetData[148:]
+
+	log.Printf("[DEBUG-7] Announce fields: encKey=%x, signKey=%x", encKey, signKey)
+	log.Printf("[DEBUG-7] Name hash=%x, random hash=%x", nameHash, randomHash)
+	log.Printf("[DEBUG-7] Signature=%x, appDataLen=%d", signature[:8], len(appData))
+
+	// Get the destination hash from header
+	var destHash []byte
+	if headerType == HEADER_TYPE_2 {
+		destHash = data[2:18]
+	} else {
+		destHash = data[2:18]
+	}
+
+	// Combine public keys
 	pubKey := append(encKey, signKey...)
+
+	// Create announced identity from public keys
 	announcedIdentity := identity.FromPublicKey(pubKey)
 	if announcedIdentity == nil {
 		return errors.New("invalid identity public key")
 	}
 
 	// Verify signature
-	signData := append(destHash, appData...)
-	if !announcedIdentity.Verify(signData, signature) {
+	signedData := make([]byte, 0)
+	signedData = append(signedData, destHash...)
+	signedData = append(signedData, encKey...)
+	signedData = append(signedData, signKey...)
+	signedData = append(signedData, nameHash...)
+	signedData = append(signedData, randomHash...)
+	signedData = append(signedData, appData...)
+
+	if !announcedIdentity.Verify(signedData, signature) {
 		return errors.New("invalid announce signature")
 	}
 
@@ -257,8 +321,8 @@ func (a *Announce) CreatePacket() []byte {
 	// Create header
 	header := CreateHeader(
 		IFAC_NONE,
-		HEADER_TYPE_1,
-		0, // No context flag
+		HEADER_TYPE_2, // Use header type 2 for announces
+		0,             // No context flag
 		PROP_TYPE_BROADCAST,
 		DEST_TYPE_SINGLE,
 		PACKET_TYPE_ANNOUNCE,
@@ -270,37 +334,84 @@ func (a *Announce) CreatePacket() []byte {
 	// Add destination hash (16 bytes)
 	packet = append(packet, a.destinationHash...)
 
+	// If using header type 2, add transport ID (16 bytes)
+	// For broadcast announces, this is filled with zeroes
+	transportID := make([]byte, 16)
+	packet = append(packet, transportID...)
+
+	// Add context byte
+	packet = append(packet, byte(0)) // Context byte, 0 for announces
+
 	// Add public key parts (32 bytes each)
 	pubKey := a.identity.GetPublicKey()
-	packet = append(packet, pubKey[:32]...) // Encryption key
-	packet = append(packet, pubKey[32:]...) // Signing key
+	encKey := pubKey[:32]  // Encryption key
+	signKey := pubKey[32:] // Signing key
+
+	// Start building data portion according to spec
+	data := make([]byte, 0, 32+32+10+10+32+64+len(a.appData))
+	data = append(data, encKey...)  // Encryption key (32 bytes)
+	data = append(data, signKey...) // Signing key (32 bytes)
+
+	// Determine if this is a node announce based on appData format
+	var appName string
+	if len(a.appData) > 2 && a.appData[0] == 0x93 {
+		// This is a node announcement
+		appName = "reticulum.node"
+	} else if len(a.appData) > 3 && a.appData[0] == 0x92 && a.appData[1] == 0xc4 {
+		nameLen := int(a.appData[2])
+		if 3+nameLen <= len(a.appData) {
+			appName = string(a.appData[3 : 3+nameLen])
+		} else {
+			appName = fmt.Sprintf("%s.%s", a.config.AppName, a.config.AppAspect)
+		}
+	} else {
+		// Default fallback using config values
+		appName = fmt.Sprintf("%s.%s", a.config.AppName, a.config.AppAspect)
+	}
 
 	// Add name hash (10 bytes)
-	nameHash := sha256.Sum256([]byte(fmt.Sprintf("%s.%s", a.config.AppName, a.config.AppAspect)))
-	packet = append(packet, nameHash[:10]...)
+	nameHash := sha256.Sum256([]byte(appName))
+	nameHash10 := nameHash[:10]
+	log.Printf("[DEBUG-6] Using name hash for '%s': %x", appName, nameHash10)
+	data = append(data, nameHash10...)
 
-	// Add random hash (10 bytes)
-	randomBytes := make([]byte, 10)
-	rand.Read(randomBytes)
-	packet = append(packet, randomBytes...)
+	// Add random hash (10 bytes) - 5 bytes random + 5 bytes time
+	randomHash := make([]byte, 10)
+	rand.Read(randomHash[:5])
+	timeBytes := make([]byte, 8)
+	binary.BigEndian.PutUint64(timeBytes, uint64(time.Now().Unix()))
+	copy(randomHash[5:], timeBytes[:5])
+	data = append(data, randomHash...)
+
+	// Add ratchet ID (32 bytes) - required in the packet format
+	if a.ratchetID != nil {
+		data = append(data, a.ratchetID...)
+	} else {
+		// If there's no ratchet, add 32 zero bytes as placeholder
+		data = append(data, make([]byte, 32)...)
+	}
 
 	// Create validation data for signature
+	// Signature consists of destination hash, public keys, name hash, random hash, and app data
 	validationData := make([]byte, 0)
 	validationData = append(validationData, a.destinationHash...)
-	validationData = append(validationData, pubKey[:32]...) // Encryption key
-	validationData = append(validationData, pubKey[32:]...) // Signing key
-	validationData = append(validationData, nameHash[:10]...)
-	validationData = append(validationData, randomBytes...)
+	validationData = append(validationData, encKey...)
+	validationData = append(validationData, signKey...)
+	validationData = append(validationData, nameHash10...)
+	validationData = append(validationData, randomHash...)
 	validationData = append(validationData, a.appData...)
 
 	// Add signature (64 bytes)
 	signature := a.identity.Sign(validationData)
-	packet = append(packet, signature...)
+	data = append(data, signature...)
 
 	// Add app data
 	if len(a.appData) > 0 {
-		packet = append(packet, a.appData...)
+		data = append(data, a.appData...)
 	}
+
+	// Combine header and data
+	packet = append(packet, data...)
 
 	return packet
 }
@@ -398,36 +509,8 @@ func (a *Announce) GetPacket() []byte {
 	defer a.mutex.Unlock()
 
 	if a.packet == nil {
-		// Generate hash from announce data
-		h := sha256.New()
-		h.Write(a.destinationHash)
-		h.Write(a.identity.GetPublicKey())
-		h.Write([]byte{a.hops})
-		h.Write(a.appData)
-		if a.ratchetID != nil {
-			h.Write(a.ratchetID)
-		}
-
-		// Construct packet
-		packet := make([]byte, 0)
-		packet = append(packet, PACKET_TYPE_ANNOUNCE)
-		packet = append(packet, a.destinationHash...)
-		packet = append(packet, a.identity.GetPublicKey()...)
-		packet = append(packet, a.hops)
-		packet = append(packet, a.appData...)
-		if a.ratchetID != nil {
-			packet = append(packet, a.ratchetID...)
-		}
-
-		// Add signature
-		signData := append(a.destinationHash, a.appData...)
-		if a.ratchetID != nil {
-			signData = append(signData, a.ratchetID...)
-		}
-		signature := a.identity.Sign(signData)
-		packet = append(packet, signature...)
-
-		a.packet = packet
+		// Use CreatePacket to generate the packet
+		a.packet = a.CreatePacket()
 	}
 
 	return a.packet

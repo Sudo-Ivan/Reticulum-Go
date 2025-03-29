@@ -1,7 +1,9 @@
 package packet
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"log"
@@ -217,14 +219,58 @@ func (p *Packet) Serialize() ([]byte, error) {
 }
 
 func NewAnnouncePacket(destHash []byte, identity *identity.Identity, appData []byte, transportID []byte) (*Packet, error) {
-	log.Printf("[DEBUG-7] Creating new announce packet: destHash=%x, appData=%s", destHash, string(appData))
+	log.Printf("[DEBUG-7] Creating new announce packet: destHash=%x, appData=%s", destHash, fmt.Sprintf("%x", appData))
 
-	// Create combined public key
+	// Get public key separated into encryption and signing keys
 	pubKey := identity.GetPublicKey()
-	log.Printf("[DEBUG-6] Using public key: %x", pubKey)
+	encKey := pubKey[:32]
+	signKey := pubKey[32:]
+	log.Printf("[DEBUG-6] Using public keys: encKey=%x, signKey=%x", encKey, signKey)
 
-	// Create signed data
-	signedData := append(destHash, pubKey...)
+	// Parse app name from first msgpack element if possible
+	// For nodes, we'll use "reticulum.node" as the name hash
+	var appName string
+	if len(appData) > 2 && appData[0] == 0x93 {
+		// This is a node announce, use standard node name
+		appName = "reticulum.node"
+	} else if len(appData) > 3 && appData[0] == 0x92 && appData[1] == 0xc4 {
+		// Try to extract name from peer announce appData
+		nameLen := int(appData[2])
+		if 3+nameLen <= len(appData) {
+			appName = string(appData[3 : 3+nameLen])
+		} else {
+			// Default fallback
+			appName = "reticulum-go.node"
+		}
+	} else {
+		// Default fallback
+		appName = "reticulum-go.node"
+	}
+
+	// Create name hash (10 bytes)
+	nameHash := sha256.Sum256([]byte(appName))
+	nameHash10 := nameHash[:10]
+	log.Printf("[DEBUG-6] Using name hash for '%s': %x", appName, nameHash10)
+
+	// Create random hash (10 bytes) - 5 bytes random + 5 bytes time
+	randomHash := make([]byte, 10)
+	rand.Read(randomHash[:5])
+	timeBytes := make([]byte, 8)
+	binary.BigEndian.PutUint64(timeBytes, uint64(time.Now().Unix()))
+	copy(randomHash[5:], timeBytes[:5])
+	log.Printf("[DEBUG-6] Generated random hash: %x", randomHash)
+
+	// Prepare ratchet ID if available (not yet implemented)
+	var ratchetID []byte
+
+	// Prepare data for signature
+	// Signature consists of destination hash, public keys, name hash, random hash, and app data
+	signedData := make([]byte, 0, len(destHash)+len(encKey)+len(signKey)+len(nameHash10)+len(randomHash)+len(appData))
+	signedData = append(signedData, destHash...)
+	signedData = append(signedData, encKey...)
+	signedData = append(signedData, signKey...)
+	signedData = append(signedData, nameHash10...)
+	signedData = append(signedData, randomHash...)
 	signedData = append(signedData, appData...)
 	log.Printf("[DEBUG-5] Created signed data (%d bytes)", len(signedData))
 
@@ -232,11 +278,22 @@ func NewAnnouncePacket(destHash []byte, identity *identity.Identity, appData []b
 	signature := identity.Sign(signedData)
 	log.Printf("[DEBUG-6] Generated signature: %x", signature)
 
-	// Combine all data
-	data := append(pubKey, appData...)
-	data = append(data, signature...)
+	// Combine all fields according to spec
+	// Data structure: Public Key (32) + Signing Key (32) + Name Hash (10) + Random Hash (10) + Ratchet (optional) + Signature (64) + App Data
+	data := make([]byte, 0, 32+32+10+10+64+len(appData))
+	data = append(data, encKey...)     // Encryption key (32 bytes)
+	data = append(data, signKey...)    // Signing key (32 bytes)
+	data = append(data, nameHash10...) // Name hash (10 bytes)
+	data = append(data, randomHash...) // Random hash (10 bytes)
+	if ratchetID != nil {
+		data = append(data, ratchetID...) // Ratchet ID (32 bytes if present)
+	}
+	data = append(data, signature...) // Signature (64 bytes)
+	data = append(data, appData...)   // Application data (variable)
+
 	log.Printf("[DEBUG-5] Combined packet data (%d bytes)", len(data))
 
+	// Create the packet with header type 2 (two address fields)
 	p := &Packet{
 		HeaderType:      HeaderType2,
 		PacketType:      PacketTypeAnnounce,

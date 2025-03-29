@@ -16,6 +16,6 @@ const (
 	DestinationLink   = 3
 
 	// Minimum packet sizes
-	MinAnnounceSize = 169 // header(2) + desthash(16) + enckey(32) + signkey(32) +
+	MinAnnounceSize = 170 // header(2) + desthash(16) + context(1) + enckey(32) + signkey(32) +
 	// namehash(10) + randomhash(10) + signature(64) + min appdata(3)
 )
