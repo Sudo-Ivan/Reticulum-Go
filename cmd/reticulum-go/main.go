@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/binary"
 	"flag"
 	"fmt"
 	"log"
@@ -48,7 +49,7 @@ const (
 	DEBUG_PACKETS         = 6    // Packet-level details
 	DEBUG_ALL             = 7    // Everything including identity operations
 	APP_NAME              = "Go-Client"
-	APP_ASPECT            = "node"
+	APP_ASPECT            = "node" // Always use "node" for node announces
 )
 
 type Reticulum struct {
@@ -62,9 +63,16 @@ type Reticulum struct {
 	announceHistoryMu sync.RWMutex
 	identity          *identity.Identity
 	destination       *destination.Destination
+
+	// Node-specific information
+	maxTransferSize int16 // Max transfer size in KB
+	nodeEnabled     bool  // Whether this node is enabled
+	nodeTimestamp   int64 // Last node announcement timestamp
 }
 
 type announceRecord struct {
+	timestamp int64
+	appData   []byte
 }
 
 func NewReticulum(cfg *common.ReticulumConfig) (*Reticulum, error) {
@@ -74,10 +82,10 @@ func NewReticulum(cfg *common.ReticulumConfig) (*Reticulum, error) {
 
 	// Set default app name and aspect if not provided
 	if cfg.AppName == "" {
-		cfg.AppName = "Go Client"
+		cfg.AppName = APP_NAME
 	}
 	if cfg.AppAspect == "" {
-		cfg.AppAspect = "node"
+		cfg.AppAspect = APP_ASPECT // Always use "node" for node announcements
 	}
 
 	if err := initializeDirectories(); err != nil {
@@ -100,23 +108,16 @@ func NewReticulum(cfg *common.ReticulumConfig) (*Reticulum, error) {
 		identity,
 		destination.IN,
 		destination.SINGLE,
-		APP_NAME,
-		APP_ASPECT,
+		"reticulum",
+		"node",
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create destination: %v", err)
 	}
 	debugLog(DEBUG_INFO, "Created destination with hash: %x", dest.GetHash())
 
-	// Set default app data for announces
-	appData := []byte(fmt.Sprintf(`{"app":"%s","aspect":"%s","version":"0.1.0"}`, APP_NAME, APP_ASPECT))
-	dest.SetDefaultAppData(appData)
-
-	// Enable destination features
-	dest.AcceptsLinks(true)
-	dest.EnableRatchets("") // Empty string for default path
-	dest.SetProofStrategy(destination.PROVE_APP)
-	debugLog(DEBUG_VERBOSE, "Configured destination features")
+	// Set node metadata
+	nodeTimestamp := time.Now().Unix()
 
 	r := &Reticulum{
 		config:          cfg,
@@ -128,7 +129,18 @@ func NewReticulum(cfg *common.ReticulumConfig) (*Reticulum, error) {
 		announceHistory: make(map[string]announceRecord),
 		identity:        identity,
 		destination:     dest,
+
+		// Node-specific information
+		maxTransferSize: 500,  // Default 500KB
+		nodeEnabled:     true, // Enabled by default
+		nodeTimestamp:   nodeTimestamp,
 	}
+
+	// Enable destination features
+	dest.AcceptsLinks(true)
+	dest.EnableRatchets("") // Empty string for default path
+	dest.SetProofStrategy(destination.PROVE_APP)
+	debugLog(DEBUG_VERBOSE, "Configured destination features")
 
 	// Initialize interfaces from config
 	for name, ifaceConfig := range cfg.Interfaces {
@@ -276,18 +288,6 @@ func main() {
 		log.Fatalf("Failed to create Reticulum instance: %v", err)
 	}
 
-	// Create announce using r.identity
-	announce, err := announce.NewAnnounce(
-		r.identity,
-		[]byte("HELLO WORLD"),
-		nil,
-		false,
-		r.config,
-	)
-	if err != nil {
-		log.Fatalf("Failed to create announce: %v", err)
-	}
-
 	// Start monitoring interfaces
 	go r.monitorInterfaces()
 
@@ -300,35 +300,44 @@ func main() {
 		log.Fatalf("Failed to start Reticulum: %v", err)
 	}
 
-	// Send initial announces after interfaces are ready
-	time.Sleep(2 * time.Second) // Give interfaces time to connect
-	for _, iface := range r.interfaces {
-		if netIface, ok := iface.(common.NetworkInterface); ok {
-			if netIface.IsEnabled() && netIface.IsOnline() {
-				debugLog(2, "Sending initial announce on interface %s", netIface.GetName())
-				if err := announce.Propagate([]common.NetworkInterface{netIface}); err != nil {
-					debugLog(1, "Failed to propagate initial announce: %v", err)
-				}
-			}
-		}
-	}
-
 	// Start periodic announces
 	go func() {
-		ticker := time.NewTicker(5 * time.Minute)
+		ticker := time.NewTicker(5 * time.Minute) // Adjust interval as needed
 		defer ticker.Stop()
 
 		for range ticker.C {
 			debugLog(3, "Starting periodic announce cycle")
+
+			// Create a new announce packet for this cycle
+			periodicAnnounce, err := announce.NewAnnounce(
+				r.identity,
+				r.createNodeAppData(),
+				nil, // No ratchet ID for now
+				false,
+				r.config,
+			)
+			if err != nil {
+				debugLog(1, "Failed to create periodic announce: %v", err)
+				continue
+			}
+
+			// Propagate announce to all online interfaces
+			var onlineInterfaces []common.NetworkInterface
 			for _, iface := range r.interfaces {
 				if netIface, ok := iface.(common.NetworkInterface); ok {
 					if netIface.IsEnabled() && netIface.IsOnline() {
-						debugLog(2, "Sending periodic announce on interface %s", netIface.GetName())
-						if err := announce.Propagate([]common.NetworkInterface{netIface}); err != nil {
-							debugLog(1, "Failed to propagate periodic announce: %v", err)
-						}
+						onlineInterfaces = append(onlineInterfaces, netIface)
 					}
 				}
+			}
+
+			if len(onlineInterfaces) > 0 {
+				debugLog(2, "Sending periodic announce on %d interfaces", len(onlineInterfaces))
+				if err := periodicAnnounce.Propagate(onlineInterfaces); err != nil {
+					debugLog(1, "Failed to propagate periodic announce: %v", err)
+				}
+			} else {
+				debugLog(3, "No online interfaces for periodic announce")
 			}
 		}
 	}()
@@ -440,7 +449,7 @@ func (r *Reticulum) Start() error {
 	// Send initial announce once per interface
 	initialAnnounce, err := announce.NewAnnounce(
 		r.identity,
-		createAppData(r.config.AppName, r.config.AppAspect),
+		r.createNodeAppData(),
 		nil,
 		false,
 		r.config,
@@ -474,7 +483,7 @@ func (r *Reticulum) Start() error {
 
 			periodicAnnounce, err := announce.NewAnnounce(
 				r.identity,
-				createAppData(r.config.AppName, r.config.AppAspect),
+				r.createNodeAppData(),
 				nil,
 				false,
 				r.config,
@@ -559,25 +568,82 @@ func (h *AnnounceHandler) ReceivedAnnounce(destHash []byte, id interface{}, appD
 	debugLog(DEBUG_INFO, "Received announce from %x", destHash)
 	debugLog(DEBUG_PACKETS, "Raw announce data: %x", appData)
 
+	var isNode bool
+	var nodeEnabled bool
+	var nodeTimestamp int64
+	var nodeMaxSize int16
+
 	// Parse msgpack array
 	if len(appData) > 0 {
-		if appData[0] == 0x92 { // msgpack array of 2 elements
+		if appData[0] == 0x92 {
+			// Format [name, ticket] for standard peers
+			debugLog(DEBUG_VERBOSE, "Received standard peer announce")
+			isNode = false
 			var pos = 1
 
-			// Parse first element (name)
-			if appData[pos] == 0xc4 { // bin 8 format
+			// Parse first element (NameBytes)
+			if pos+1 < len(appData) && appData[pos] == 0xc4 {
 				nameLen := int(appData[pos+1])
-				name := string(appData[pos+2 : pos+2+nameLen])
-				pos += 2 + nameLen
-				debugLog(DEBUG_VERBOSE, "Announce name: %s", name)
+				if pos+2+nameLen <= len(appData) {
+					nameBytes := appData[pos+2 : pos+2+nameLen]
+					name := string(nameBytes)
+					pos += 2 + nameLen
+					debugLog(DEBUG_VERBOSE, "Peer name: %s (bytes: %x)", name, nameBytes)
 
-				// Parse second element (app data)
-				if pos < len(appData) && appData[pos] == 0xc4 { // bin 8 format
-					dataLen := int(appData[pos+1])
-					data := appData[pos+2 : pos+2+dataLen]
-					debugLog(DEBUG_VERBOSE, "Announce app data: %s", string(data))
+					// Parse second element (TicketValue)
+					if pos < len(appData) {
+						ticketValue := appData[pos] // Assuming fixint for now
+						debugLog(DEBUG_VERBOSE, "Peer ticket value: %d", ticketValue)
+					} else {
+						debugLog(DEBUG_ERROR, "Could not parse ticket value from announce appData")
+					}
+				} else {
+					debugLog(DEBUG_ERROR, "Could not parse name bytes from announce appData")
+				}
+			} else {
+				debugLog(DEBUG_ERROR, "Announce appData name is not in expected bin 8 format")
+			}
+		} else if appData[0] == 0x93 {
+			// Format [enable, timestamp, maxsize] for nodes
+			debugLog(DEBUG_VERBOSE, "Received node announce")
+			isNode = true
+			var pos = 1
+
+			// Parse first element (Boolean enable/disable)
+			if pos < len(appData) {
+				if appData[pos] == 0xc3 {
+					nodeEnabled = true
+				} else if appData[pos] == 0xc2 {
+					nodeEnabled = false
+				} else {
+					debugLog(DEBUG_ERROR, "Unexpected format for node enabled status: %x", appData[pos])
+				}
+				pos++
+				debugLog(DEBUG_VERBOSE, "Node enabled: %v", nodeEnabled)
+
+				// Parse second element (Int32 timestamp)
+				if pos+4 < len(appData) && appData[pos] == 0xd2 {
+					pos++
+					timestamp := binary.BigEndian.Uint32(appData[pos : pos+4])
+					nodeTimestamp = int64(timestamp)
+					pos += 4
+					debugLog(DEBUG_VERBOSE, "Node timestamp: %d (%s)", timestamp, time.Unix(nodeTimestamp, 0))
+
+					// Parse third element (Int16 max transfer size)
+					if pos+2 < len(appData) && appData[pos] == 0xd1 {
+						pos++
+						maxSize := binary.BigEndian.Uint16(appData[pos : pos+2])
+						nodeMaxSize = int16(maxSize)
+						debugLog(DEBUG_VERBOSE, "Node max transfer size: %d KB", nodeMaxSize)
+					} else {
+						debugLog(DEBUG_ERROR, "Could not parse max transfer size from node announce")
+					}
+				} else {
+					debugLog(DEBUG_ERROR, "Could not parse timestamp from node announce")
 				}
 			}
+		} else {
+			debugLog(DEBUG_VERBOSE, "Unknown announce data format: %x", appData)
 		}
 	}
 
@@ -598,14 +664,22 @@ func (h *AnnounceHandler) ReceivedAnnounce(destHash []byte, id interface{}, appD
 			}
 		}
 
-		// Store announce in history
+		// Create a better record with more info
+		recordType := "peer"
+		if isNode {
+			recordType = "node"
+			debugLog(DEBUG_INFO, "Storing node in announce history: enabled=%v, timestamp=%d, maxsize=%dKB",
+				nodeEnabled, nodeTimestamp, nodeMaxSize)
+		}
+
 		h.reticulum.announceHistoryMu.Lock()
 		h.reticulum.announceHistory[identity.GetHexHash()] = announceRecord{
-			// You can add fields here to store relevant announce data
+			timestamp: time.Now().Unix(),
+			appData:   appData,
 		}
 		h.reticulum.announceHistoryMu.Unlock()
 
-		debugLog(DEBUG_VERBOSE, "Stored announce in history for identity %s", identity.GetHexHash())
+		debugLog(DEBUG_VERBOSE, "Stored %s announce in history for identity %s", recordType, identity.GetHexHash())
 	}
 
 	return nil
@@ -619,24 +693,33 @@ func (r *Reticulum) GetDestination() *destination.Destination {
 	return r.destination
 }
 
-func createAppData(appName, appAspect string) []byte {
-	nameString := fmt.Sprintf("%s.%s", appName, appAspect)
+func (r *Reticulum) createNodeAppData() []byte {
+	// Create a msgpack array with 3 elements
+	// [Bool, Int32, Int16] for [enable, timestamp, max_transfer_size]
+	appData := []byte{0x93} // Array with 3 elements
 
-	// Create MessagePack array with 2 elements
-	appData := []byte{0x92} // Fix array with 2 elements
+	// Element 0: Boolean for enable/disable peer
+	if r.nodeEnabled {
+		appData = append(appData, 0xc3) // true
+	} else {
+		appData = append(appData, 0xc2) // false
+	}
 
-	// First element: name string (always use str 8 format for consistency)
-	nameBytes := []byte(nameString)
-	appData = append(appData, 0xd9)                 // str 8 format
-	appData = append(appData, byte(len(nameBytes))) // length
-	appData = append(appData, nameBytes...)         // string data
+	// Element 1: Int32 timestamp (current time)
+	// Update the timestamp when creating new announcements
+	r.nodeTimestamp = time.Now().Unix()
+	appData = append(appData, 0xd2) // int32 format
+	timeBytes := make([]byte, 4)
+	binary.BigEndian.PutUint32(timeBytes, uint32(r.nodeTimestamp))
+	appData = append(appData, timeBytes...)
 
-	// Second element: version string (always use str 8 format for consistency)
-	version := "0.1.0"
-	versionBytes := []byte(version)
-	appData = append(appData, 0xd9)                    // str 8 format
-	appData = append(appData, byte(len(versionBytes))) // length
-	appData = append(appData, versionBytes...)         // string data
+	// Element 2: Int16 max transfer size in KB
+	appData = append(appData, 0xd1) // int16 format
+	sizeBytes := make([]byte, 2)
+	binary.BigEndian.PutUint16(sizeBytes, uint16(r.maxTransferSize))
+	appData = append(appData, sizeBytes...)
 
+	log.Printf("[DEBUG-7] Created node appData (msgpack [enable=%v, timestamp=%d, maxsize=%d]): %x",
+		r.nodeEnabled, r.nodeTimestamp, r.maxTransferSize, appData)
 	return appData
 }
