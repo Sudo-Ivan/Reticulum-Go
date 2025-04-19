@@ -1,6 +1,6 @@
 # Reticulum-Go
 
-!> [!WARNING]  
+> [!WARNING]  
 > This project is still work in progress. Currently not compatible with the Python version.
 
 [Reticulum Network](https://github.com/markqvist/Reticulum) implementation in Go `1.24+`.
