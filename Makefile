@@ -70,7 +70,14 @@ build-netbsd:
 	CGO_ENABLED=0 GOOS=netbsd GOARCH=arm64 $(GOBUILD) -o $(BUILD_DIR)/$(BINARY_NAME)-netbsd-arm64 $(MAIN_PACKAGE)
 	CGO_ENABLED=0 GOOS=netbsd GOARCH=arm $(GOBUILD) -o $(BUILD_DIR)/$(BINARY_NAME)-netbsd-arm $(MAIN_PACKAGE)
 
-build-all: build-linux build-windows build-darwin build-freebsd build-openbsd build-netbsd
+build-arm:
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm $(GOBUILD) -o $(BUILD_DIR)/$(BINARY_NAME)-arm $(MAIN_PACKAGE)
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 $(GOBUILD) -o $(BUILD_DIR)/$(BINARY_NAME)-arm64 $(MAIN_PACKAGE)
+
+build-riscv:
+	CGO_ENABLED=0 GOOS=linux GOARCH=riscv64 $(GOBUILD) -o $(BUILD_DIR)/$(BINARY_NAME)-riscv64 $(MAIN_PACKAGE)
+
+build-all: build-linux build-windows build-darwin build-freebsd build-openbsd build-netbsd build-arm build-riscv
 
 run:
 	@./$(BUILD_DIR)/$(BINARY_NAME)
@@ -92,6 +99,8 @@ help:
 	@echo "  build-freebsd- Build for FreeBSD (amd64, 386, arm64, arm, riscv64)"
 	@echo "  build-openbsd- Build for OpenBSD (amd64, 386, arm64, arm, ppc64, riscv64)"
 	@echo "  build-netbsd - Build for NetBSD (amd64, 386, arm64, arm)"
+	@echo "  build-arm    - Build for ARM architectures (arm, arm64)"
+	@echo "  build-riscv  - Build for RISC-V architecture (riscv64)"
 	@echo "  build-all    - Build for all platforms and architectures"
 	@echo "  run          - Run reticulum binary"
 	@echo "  install      - Install dependencies" 
