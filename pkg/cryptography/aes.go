@@ -59,5 +59,9 @@ func DecryptAESCBC(key, ciphertext []byte) ([]byte, error) {
 
 	// Remove PKCS7 padding
 	padding := int(plaintext[len(plaintext)-1])
+	if padding == 0 || padding > len(plaintext) {
+		return nil, errors.New("invalid PKCS7 padding")
+	}
+	// TODO: Add check to ensure all padding bytes are correct?
 	return plaintext[:len(plaintext)-padding], nil
 }

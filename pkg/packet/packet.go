@@ -115,9 +115,13 @@ func (p *Packet) Pack() error {
 
 	log.Printf("[DEBUG-6] Packing packet: type=%d, header=%d", p.PacketType, p.HeaderType)
 
-	// Create header byte
-	flags := byte(p.HeaderType<<6) | byte(p.ContextFlag<<5) |
-		byte(p.TransportType<<4) | byte(p.DestinationType<<2) | byte(p.PacketType)
+	// Create header byte (Corrected order)
+	flags := byte(0)
+	flags |= (p.HeaderType << 6) & 0b01000000
+	flags |= (p.ContextFlag << 5) & 0b00100000
+	flags |= (p.TransportType << 4) & 0b00010000
+	flags |= (p.DestinationType << 2) & 0b00001100
+	flags |= p.PacketType & 0b00000011
 
 	header := []byte{flags, p.Hops}
 	log.Printf("[DEBUG-5] Created packet header: flags=%08b, hops=%d", flags, p.Hops)
@@ -193,11 +197,19 @@ func (p *Packet) GetHash() []byte {
 }
 
 func (p *Packet) getHashablePart() []byte {
-	hashable := []byte{p.Raw[0] & 0b00001111}
+	hashable := []byte{p.Raw[0] & 0b00001111} // Lower 4 bits of flags
 	if p.HeaderType == HeaderType2 {
-		hashable = append(hashable, p.Raw[18:]...)
+		// Match Python: Start hash from DestHash (index 18), skipping TransportID
+		dstLen := 16 // RNS.Identity.TRUNCATED_HASHLENGTH / 8
+		startIndex := dstLen + 2
+		if len(p.Raw) > startIndex {
+			hashable = append(hashable, p.Raw[startIndex:]...)
+		}
 	} else {
-		hashable = append(hashable, p.Raw[2:]...)
+		// Match Python: Start hash from DestHash (index 2)
+		if len(p.Raw) > 2 {
+			hashable = append(hashable, p.Raw[2:]...)
+		}
 	}
 	return hashable
 }
