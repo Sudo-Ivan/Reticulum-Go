@@ -245,7 +245,7 @@ func (r *Reticulum) monitorInterfaces() {
 					stats = fmt.Sprintf("%s, RTT: %v", stats, tcpClient.GetRTT())
 				}
 
-				debugLog(DEBUG_VERBOSE, stats)
+				debugLog(DEBUG_VERBOSE, "%s", stats)
 			}
 		}
 	}
