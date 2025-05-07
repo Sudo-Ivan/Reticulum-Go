@@ -2,7 +2,6 @@ package interfaces
 
 import (
 	"fmt"
-	"log"
 	"net"
 	"sync"
 
@@ -173,32 +172,24 @@ func (ui *UDPInterface) Start() error {
 	return nil
 }
 
+/*
 func (ui *UDPInterface) readLoop() {
 	buffer := make([]byte, ui.MTU)
 	for {
-		if ui.IsDetached() {
-			return
-		}
-
-		n, addr, err := ui.conn.ReadFromUDP(buffer)
+		n, _, err := ui.conn.ReadFromUDP(buffer)
 		if err != nil {
-			if !ui.IsDetached() {
-				log.Printf("UDP read error: %v", err)
+			if ui.Online {
+				log.Printf("Error reading from UDP interface %s: %v", ui.Name, err)
+				ui.Stop() // Consider if stopping is the right action or just log and continue
 			}
 			return
 		}
-
-		ui.mutex.Lock()
-		ui.RxBytes += uint64(n)
-		ui.mutex.Unlock()
-
-		log.Printf("Received %d bytes from %s", n, addr.String())
-
-		if callback := ui.GetPacketCallback(); callback != nil {
-			callback(buffer[:n], ui)
+		if ui.packetCallback != nil {
+			ui.packetCallback(buffer[:n], ui)
 		}
 	}
 }
+*/
 
 func (ui *UDPInterface) IsEnabled() bool {
 	ui.mutex.RLock()

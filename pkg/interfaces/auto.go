@@ -44,21 +44,19 @@ type Peer struct {
 }
 
 func NewAutoInterface(name string, config *common.InterfaceConfig) (*AutoInterface, error) {
-	base := &BaseInterface{
-		Name:     name,
-		Mode:     common.IF_MODE_FULL,
-		Type:     common.IF_TYPE_AUTO,
-		Online:   false,
-		Enabled:  config.Enabled,
-		Detached: false,
-		IN:       false,
-		OUT:      false,
-		MTU:      common.DEFAULT_MTU,
-		Bitrate:  BITRATE_MINIMUM,
-	}
-
 	ai := &AutoInterface{
-		BaseInterface:     *base,
+		BaseInterface: BaseInterface{
+			Name:     name,
+			Mode:     common.IF_MODE_FULL,
+			Type:     common.IF_TYPE_AUTO,
+			Online:   false,
+			Enabled:  config.Enabled,
+			Detached: false,
+			IN:       false,
+			OUT:      false,
+			MTU:      common.DEFAULT_MTU,
+			Bitrate:  BITRATE_MINIMUM,
+		},
 		discoveryPort:     DEFAULT_DISCOVERY_PORT,
 		dataPort:          DEFAULT_DATA_PORT,
 		discoveryScope:    SCOPE_LINK,
@@ -165,13 +163,13 @@ func (ai *AutoInterface) startDataListener(iface *net.Interface) error {
 func (ai *AutoInterface) handleDiscovery(conn *net.UDPConn, ifaceName string) {
 	buf := make([]byte, 1024)
 	for {
-		n, remoteAddr, err := conn.ReadFromUDP(buf)
+		_, remoteAddr, err := conn.ReadFromUDP(buf)
 		if err != nil {
 			log.Printf("Discovery read error: %v", err)
 			continue
 		}
 
-		ai.handlePeerAnnounce(remoteAddr, buf[:n], ifaceName)
+		ai.handlePeerAnnounce(remoteAddr, ifaceName)
 	}
 }
 
@@ -192,7 +190,7 @@ func (ai *AutoInterface) handleData(conn *net.UDPConn) {
 	}
 }
 
-func (ai *AutoInterface) handlePeerAnnounce(addr *net.UDPAddr, data []byte, ifaceName string) {
+func (ai *AutoInterface) handlePeerAnnounce(addr *net.UDPAddr, ifaceName string) {
 	ai.mutex.Lock()
 	defer ai.mutex.Unlock()
 

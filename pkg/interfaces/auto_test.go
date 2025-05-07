@@ -97,7 +97,7 @@ func (m *mockAutoInterface) Stop() error {
 }
 
 // mockHandlePeerAnnounce is a test-only method that doesn't handle its own locking
-func (m *mockAutoInterface) mockHandlePeerAnnounce(addr *net.UDPAddr, data []byte, ifaceName string) {
+func (m *mockAutoInterface) mockHandlePeerAnnounce(addr *net.UDPAddr, ifaceName string) {
 	peerAddr := addr.IP.String() + "%" + addr.Zone
 
 	for _, localAddr := range m.linkLocalAddrs {
@@ -174,7 +174,7 @@ func TestAutoInterfacePeerManagement(t *testing.T) {
 
 	t.Run("AddPeer1", func(t *testing.T) {
 		ai.mutex.Lock()
-		ai.mockHandlePeerAnnounce(peer1Addr, []byte("announce1"), "eth0")
+		ai.mockHandlePeerAnnounce(peer1Addr, "eth0")
 		ai.mutex.Unlock()
 
 		// Give a small amount of time for the peer to be processed
@@ -202,7 +202,7 @@ func TestAutoInterfacePeerManagement(t *testing.T) {
 
 	t.Run("AddPeer2", func(t *testing.T) {
 		ai.mutex.Lock()
-		ai.mockHandlePeerAnnounce(peer2Addr, []byte("announce2"), "eth0")
+		ai.mockHandlePeerAnnounce(peer2Addr, "eth0")
 		ai.mutex.Unlock()
 
 		// Give a small amount of time for the peer to be processed
@@ -223,7 +223,7 @@ func TestAutoInterfacePeerManagement(t *testing.T) {
 
 	t.Run("IgnoreLocalAnnounce", func(t *testing.T) {
 		ai.mutex.Lock()
-		ai.mockHandlePeerAnnounce(localAddr, []byte("local_announce"), "eth0")
+		ai.mockHandlePeerAnnounce(localAddr, "eth0")
 		ai.mutex.Unlock()
 
 		// Give a small amount of time for the peer to be processed
@@ -252,7 +252,7 @@ func TestAutoInterfacePeerManagement(t *testing.T) {
 		}
 
 		ai.mutex.Lock()
-		ai.mockHandlePeerAnnounce(peer1Addr, []byte("announce1_again"), "eth0")
+		ai.mockHandlePeerAnnounce(peer1Addr, "eth0")
 		ai.mutex.Unlock()
 
 		// Give a small amount of time for the peer to be processed
