@@ -68,7 +68,7 @@ func NewTCPClientInterface(name string, targetHost string, targetPort int, kissF
 	}
 
 	if enabled {
-		addr := fmt.Sprintf("%s:%d", targetHost, targetPort)
+		addr := net.JoinHostPort(targetHost, fmt.Sprintf("%d", targetPort))
 		conn, err := net.Dial("tcp", addr)
 		if err != nil {
 			return nil, err
@@ -95,7 +95,7 @@ func (tc *TCPClientInterface) Start() error {
 		return nil
 	}
 
-	addr := fmt.Sprintf("%s:%d", tc.targetAddr, tc.targetPort)
+	addr := net.JoinHostPort(tc.targetAddr, fmt.Sprintf("%d", tc.targetPort))
 	conn, err := net.Dial("tcp", addr)
 	if err != nil {
 		return err
@@ -346,7 +346,7 @@ func (tc *TCPClientInterface) reconnect() {
 	for retries < tc.maxReconnectTries {
 		tc.teardown()
 
-		addr := fmt.Sprintf("%s:%d", tc.targetAddr, tc.targetPort)
+		addr := net.JoinHostPort(tc.targetAddr, fmt.Sprintf("%d", tc.targetPort))
 
 		conn, err := net.Dial("tcp", addr)
 		if err == nil {
