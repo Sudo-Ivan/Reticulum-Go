@@ -1,6 +1,6 @@
 ### Core Components (In Progress) 
 
-Last Updated: 2025-04-18
+Last Updated: 2025-07-06
 
 - [x] Basic Configuration System
   - [x] Basic config structure
@@ -26,7 +26,7 @@ Last Updated: 2025-04-18
   - [x] Ed25519
   - [x] Curve25519
   - [x] AES-128-CBC
-  - [ ] AES-256-CBC
+  - [x] AES-256-CBC
   - [x] SHA-256
   - [x] HKDF
   - [x] Secure random number generation
