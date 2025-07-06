@@ -29,4 +29,4 @@ func platformGetRTT(fd uintptr) time.Duration {
 
 	// RTT is in microseconds, convert to Duration
 	return time.Duration(info.Rtt) * time.Microsecond
-} 
+}

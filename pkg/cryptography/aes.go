@@ -13,7 +13,7 @@ const (
 	AES128KeySize = 16 // 128 bits
 	AES192KeySize = 24 // 192 bits
 	AES256KeySize = 32 // 256 bits
-	
+
 	// Default to AES-256
 	DefaultKeySize = AES256KeySize
 )
@@ -23,7 +23,7 @@ func GenerateAESKey(keySize int) ([]byte, error) {
 	if keySize != AES128KeySize && keySize != AES192KeySize && keySize != AES256KeySize {
 		return nil, errors.New("invalid key size: must be 16, 24, or 32 bytes")
 	}
-	
+
 	key := make([]byte, keySize)
 	if _, err := io.ReadFull(rand.Reader, key); err != nil {
 		return nil, err
@@ -117,19 +117,18 @@ func DecryptAESCBC(key, ciphertext []byte) ([]byte, error) {
 	if len(plaintext) == 0 {
 		return nil, errors.New("invalid padding: empty plaintext")
 	}
-	
+
 	padding := int(plaintext[len(plaintext)-1])
 	if padding == 0 || padding > aes.BlockSize || padding > len(plaintext) {
 		return nil, errors.New("invalid PKCS7 padding")
 	}
-	
+
 	// Verify all padding bytes are correct
 	for i := len(plaintext) - padding; i < len(plaintext); i++ {
 		if plaintext[i] != byte(padding) {
 			return nil, errors.New("invalid PKCS7 padding")
 		}
 	}
-	
+
 	return plaintext[:len(plaintext)-padding], nil
 }
-

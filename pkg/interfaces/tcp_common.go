@@ -11,4 +11,4 @@ import (
 // Default implementation for non-Linux platforms
 func platformGetRTT(fd uintptr) time.Duration {
 	return 0
-} 
+}

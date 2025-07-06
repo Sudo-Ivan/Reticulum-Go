@@ -74,7 +74,7 @@ func TestAES256CBCEncryptionDecryption(t *testing.T) {
 			}
 
 			if !bytes.Equal(tc.plaintext, decrypted) {
-				t.Errorf("Decrypted text does not match original plaintext.\nGot:  %q (%x)\nWant: %q (%x)", 
+				t.Errorf("Decrypted text does not match original plaintext.\nGot:  %q (%x)\nWant: %q (%x)",
 					decrypted, decrypted, tc.plaintext, tc.plaintext)
 			}
 		})
@@ -83,7 +83,7 @@ func TestAES256CBCEncryptionDecryption(t *testing.T) {
 
 func TestAES256CBC_InvalidKeySize(t *testing.T) {
 	plaintext := []byte("test message")
-	
+
 	invalidKeys := [][]byte{
 		make([]byte, 16), // AES-128
 		make([]byte, 24), // AES-192
@@ -112,7 +112,7 @@ func TestAES256CBC_InvalidKeySize(t *testing.T) {
 
 func TestAESCBCEncryptionDecryption(t *testing.T) {
 	keySizes := []int{AES128KeySize, AES192KeySize, AES256KeySize}
-	
+
 	for _, keySize := range keySizes {
 		t.Run(fmt.Sprintf("AES_%d", keySize*8), func(t *testing.T) {
 			key, err := GenerateAESKey(keySize)
@@ -166,10 +166,10 @@ func TestDecryptAESCBCErrorCases(t *testing.T) {
 	})
 
 	t.Run("InvalidKeySize", func(t *testing.T) {
-		invalidKey := make([]byte, 17) // Invalid key size
+		invalidKey := make([]byte, 17)      // Invalid key size
 		validCiphertext := make([]byte, 32) // IV + one block
 		rand.Read(validCiphertext)
-		
+
 		_, err := DecryptAESCBC(invalidKey, validCiphertext)
 		if err == nil {
 			t.Error("DecryptAESCBC should have failed for invalid key size")
