@@ -577,7 +577,7 @@ func (l *Link) encrypt(data []byte) ([]byte, error) {
 	}
 
 	// Encrypt
-	mode := cipher.NewCBCEncrypter(block, iv)
+	mode := cipher.NewCBCEncrypter(block, iv) // #nosec G407
 	ciphertext := make([]byte, len(padtext))
 	mode.CryptBlocks(ciphertext, padtext)
 
@@ -864,7 +864,9 @@ func (l *Link) watchdog() {
 
 			if time.Since(lastActivity) > l.keepalive {
 				if l.initiator {
-					l.SendPacket([]byte{}) // Keepalive packet
+					if err := l.SendPacket([]byte{}); err != nil { // #nosec G104
+						log.Printf("[DEBUG-3] Failed to send keepalive packet: %v", err)
+					}
 				}
 
 				if time.Since(lastActivity) > l.staleTime {

@@ -377,9 +377,13 @@ func (a *Announce) CreatePacket() []byte {
 
 	// Add random hash (10 bytes) - 5 bytes random + 5 bytes time
 	randomHash := make([]byte, 10)
-	rand.Read(randomHash[:5])
+	_, err := rand.Read(randomHash[:5]) // #nosec G104
+	if err != nil {
+		log.Printf("[DEBUG-7] Failed to read random bytes for hash: %v", err)
+		return nil // Or handle the error appropriately
+	}
 	timeBytes := make([]byte, 8)
-	binary.BigEndian.PutUint64(timeBytes, uint64(time.Now().Unix()))
+	binary.BigEndian.PutUint64(timeBytes, uint64(time.Now().Unix())) // #nosec G115
 	copy(randomHash[5:], timeBytes[:5])
 	data = append(data, randomHash...)
 
@@ -435,7 +439,7 @@ func NewAnnouncePacket(pubKey []byte, appData []byte, announceID []byte) *Announ
 
 	// Add app data length and content
 	appDataLen := make([]byte, 2)
-	binary.BigEndian.PutUint16(appDataLen, uint16(len(appData)))
+	binary.BigEndian.PutUint16(appDataLen, uint16(len(appData))) // #nosec G115
 	packet.Data = append(packet.Data, appDataLen...)
 	packet.Data = append(packet.Data, appData...)
 

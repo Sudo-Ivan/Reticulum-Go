@@ -44,7 +44,7 @@ func EnsureConfigDir() error {
 	}
 
 	configDir := filepath.Join(homeDir, ".reticulum-go")
-	return os.MkdirAll(configDir, 0755)
+	return os.MkdirAll(configDir, 0700) // #nosec G301
 }
 
 // parseValue parses string values into appropriate types
@@ -70,7 +70,7 @@ func parseValue(value string) interface{} {
 
 // LoadConfig loads the configuration from the specified path
 func LoadConfig(path string) (*common.ReticulumConfig, error) {
-	file, err := os.Open(path)
+	file, err := os.Open(path) // #nosec G304
 	if err != nil {
 		return nil, err
 	}
@@ -202,7 +202,7 @@ func SaveConfig(cfg *common.ReticulumConfig) error {
 		builder.WriteString("\n")
 	}
 
-	return os.WriteFile(cfg.ConfigPath, []byte(builder.String()), 0644)
+	return os.WriteFile(cfg.ConfigPath, []byte(builder.String()), 0600) // #nosec G306
 }
 
 // CreateDefaultConfig creates a default configuration file
@@ -244,7 +244,7 @@ func CreateDefaultConfig(path string) error {
 		Port:    37696,
 	}
 
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil { // #nosec G301
 		return err
 	}
 

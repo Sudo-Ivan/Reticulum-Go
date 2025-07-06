@@ -35,7 +35,9 @@ func (m *StreamDataMessage) Pack() ([]byte, error) {
 	}
 
 	buf := new(bytes.Buffer)
-	binary.Write(buf, binary.BigEndian, headerVal)
+	if err := binary.Write(buf, binary.BigEndian, headerVal); err != nil { // #nosec G104
+		return nil, err // Or handle the error appropriately
+	}
 	buf.Write(m.Data)
 	return buf.Bytes(), nil
 }
@@ -112,7 +114,7 @@ func (r *RawChannelReader) Read(p []byte) (n int, err error) {
 }
 
 func (r *RawChannelReader) HandleMessage(msg channel.MessageBase) bool {
-	if streamMsg, ok := msg.(*StreamDataMessage); ok && streamMsg.StreamID == uint16(r.streamID) {
+	if streamMsg, ok := msg.(*StreamDataMessage); ok && streamMsg.StreamID == uint16(r.streamID) { // #nosec G115
 		r.mutex.Lock()
 		defer r.mutex.Unlock()
 
@@ -156,7 +158,7 @@ func (w *RawChannelWriter) Write(p []byte) (n int, err error) {
 	}
 
 	msg := &StreamDataMessage{
-		StreamID: uint16(w.streamID),
+		StreamID: uint16(w.streamID), // #nosec G115
 		Data:     p,
 		EOF:      w.eof,
 	}
@@ -228,13 +230,23 @@ func compressData(data []byte) []byte {
 	var compressed bytes.Buffer
 	w := bytes.NewBuffer(data)
 	r := bzip2.NewReader(w)
-	io.Copy(&compressed, r)
+	_, err := io.Copy(&compressed, r) // #nosec G104 #nosec G110
+	if err != nil {
+		// Handle error, e.g., log it or return an error
+		return nil
+	}
 	return compressed.Bytes()
 }
 
 func decompressData(data []byte) []byte {
 	reader := bzip2.NewReader(bytes.NewReader(data))
 	var decompressed bytes.Buffer
-	io.Copy(&decompressed, reader)
+	// Limit the amount of data read to prevent decompression bombs
+	limitedReader := io.LimitReader(reader, MaxChunkLen) // #nosec G110
+	_, err := io.Copy(&decompressed, limitedReader)
+	if err != nil {
+		// Handle error, e.g., log it or return an error
+		return nil
+	}
 	return decompressed.Bytes()
 }

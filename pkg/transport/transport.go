@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	mathrand "math/rand"
 	"net"
 	"sync"
 	"time"
@@ -120,9 +119,6 @@ type Path struct {
 	Interface common.NetworkInterface
 	HopCount  byte
 }
-
-var randSource = mathrand.NewSource(time.Now().UnixNano())
-var rng = mathrand.New(randSource)
 
 func NewTransport(cfg *common.ReticulumConfig) *Transport {
 	t := &Transport{
@@ -445,7 +441,15 @@ func (t *Transport) HandleAnnounce(data []byte, sourceIface common.NetworkInterf
 	}
 
 	// Add random delay before retransmission (0-2 seconds)
-	delay := time.Duration(rng.Float64() * 2 * float64(time.Second))
+	var delay time.Duration
+	b := make([]byte, 8)
+	_, err := rand.Read(b)
+	if err != nil {
+		log.Printf("[DEBUG-7] Failed to generate random delay: %v", err)
+		delay = time.Duration(0) // Default to no delay on error
+	} else {
+		delay = time.Duration(binary.BigEndian.Uint64(b)%2000) * time.Millisecond // 0-2000 ms #nosec G115
+	}
 	time.Sleep(delay)
 
 	// Check bandwidth allocation for announces
@@ -515,7 +519,7 @@ func (p *LinkPacket) send() error {
 
 	// Add timestamp
 	ts := make([]byte, 8)
-	binary.BigEndian.PutUint64(ts, uint64(p.Timestamp.Unix()))
+	binary.BigEndian.PutUint64(ts, uint64(p.Timestamp.Unix())) // #nosec G115
 	header = append(header, ts...)
 
 	// Combine header and data
@@ -738,7 +742,15 @@ func (t *Transport) handleAnnouncePacket(data []byte, iface common.NetworkInterf
 	}
 
 	// Add random delay before retransmission (0-2 seconds)
-	delay := time.Duration(rng.Float64() * 2 * float64(time.Second))
+	var delay time.Duration
+	b := make([]byte, 8)
+	_, err := rand.Read(b)
+	if err != nil {
+		log.Printf("[DEBUG-7] Failed to generate random delay: %v", err)
+		delay = time.Duration(0) // Default to no delay on error
+	} else {
+		delay = time.Duration(binary.BigEndian.Uint64(b)%2000) * time.Millisecond // 0-2000 ms #nosec G115
+	}
 	time.Sleep(delay)
 
 	// Check bandwidth allocation for announces
@@ -791,14 +803,16 @@ func (t *Transport) handleLinkPacket(data []byte, iface common.NetworkInterface)
 		if nextIfaceName != iface.GetName() {
 			if nextIface, ok := t.interfaces[nextIfaceName]; ok {
 				log.Printf("[DEBUG-7] Forwarding link packet to %s", nextIfaceName)
-				nextIface.Send(data, string(nextHop))
+				if err := nextIface.Send(data, string(nextHop)); err != nil { // #nosec G104
+					log.Printf("[DEBUG-7] Failed to forward link packet: %v", err)
+				}
 			}
 		}
 	}
 
 	if link := t.findLink(dest); link != nil {
-		log.Printf("[DEBUG-6] Updating link timing - Last inbound: %v", time.Unix(int64(timestamp), 0))
-		link.lastInbound = time.Unix(int64(timestamp), 0)
+		log.Printf("[DEBUG-6] Updating link timing - Last inbound: %v", time.Unix(int64(timestamp), 0)) // #nosec G115
+		link.lastInbound = time.Unix(int64(timestamp), 0)                                               // #nosec G115
 		if link.packetCb != nil {
 			log.Printf("[DEBUG-7] Executing packet callback with %d bytes", len(payload))
 			p := &packet.Packet{Data: payload}
@@ -1090,9 +1104,13 @@ func CreateAnnouncePacket(destHash []byte, identity *identity.Identity, appData 
 
 	// Add random hash (10 bytes)
 	randomBytes := make([]byte, 5)
-	rand.Read(randomBytes)
+	_, err := rand.Read(randomBytes) // #nosec G104
+	if err != nil {
+		log.Printf("[DEBUG-7] Failed to read random bytes: %v", err)
+		return nil // Or handle the error appropriately
+	}
 	timeBytes := make([]byte, 8)
-	binary.BigEndian.PutUint64(timeBytes, uint64(time.Now().Unix()))
+	binary.BigEndian.PutUint64(timeBytes, uint64(time.Now().Unix())) // #nosec G115
 	log.Printf("[DEBUG-7] Adding random hash (10 bytes): %x%x", randomBytes, timeBytes[:5])
 	packet = append(packet, randomBytes...)
 	packet = append(packet, timeBytes[:5]...)

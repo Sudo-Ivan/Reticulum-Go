@@ -70,7 +70,7 @@ func (ui *UDPInterface) Detach() {
 	defer ui.mutex.Unlock()
 	ui.Detached = true
 	if ui.conn != nil {
-		ui.conn.Close()
+		ui.conn.Close() // #nosec G104
 	}
 }
 

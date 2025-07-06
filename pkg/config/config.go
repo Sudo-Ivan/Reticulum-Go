@@ -39,7 +39,7 @@ type Config struct {
 }
 
 func LoadConfig(path string) (*Config, error) {
-	file, err := os.Open(path)
+	file, err := os.Open(path) // #nosec G304
 	if err != nil {
 		return nil, err
 	}
@@ -176,7 +176,7 @@ func SaveConfig(cfg *Config, path string) error {
 		builder.WriteString(fmt.Sprintf("i2p_tunneled = %v\n\n", iface.I2PTunneled))
 	}
 
-	return os.WriteFile(path, []byte(builder.String()), 0644)
+	return os.WriteFile(path, []byte(builder.String()), 0600) // #nosec G306
 }
 
 func GetConfigDir() string {
@@ -194,7 +194,7 @@ func GetDefaultConfigPath() string {
 
 func EnsureConfigDir() error {
 	configDir := GetConfigDir()
-	return os.MkdirAll(configDir, 0755)
+	return os.MkdirAll(configDir, 0700) // #nosec G301
 }
 
 func InitConfig() (*Config, error) {

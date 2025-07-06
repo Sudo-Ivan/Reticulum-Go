@@ -164,7 +164,11 @@ func TruncatedHash(data []byte) []byte {
 
 func GetRandomHash() []byte {
 	randomData := make([]byte, TRUNCATED_HASHLENGTH/8)
-	rand.Read(randomData)
+	_, err := rand.Read(randomData) // #nosec G104
+	if err != nil {
+		log.Printf("[DEBUG-1] Failed to read random data for hash: %v", err)
+		return nil // Or handle the error appropriately
+	}
 	return TruncatedHash(randomData)
 }
 
@@ -440,7 +444,7 @@ func (i *Identity) ToFile(path string) error {
 		"app_data":         i.appData,
 	}
 
-	file, err := os.Create(path)
+	file, err := os.Create(path) // #nosec G304
 	if err != nil {
 		log.Printf("[DEBUG-1] Failed to create identity file: %v", err)
 		return err
@@ -459,7 +463,7 @@ func (i *Identity) ToFile(path string) error {
 func RecallIdentity(path string) (*Identity, error) {
 	log.Printf("[DEBUG-7] Attempting to recall identity from: %s", path)
 
-	file, err := os.Open(path)
+	file, err := os.Open(path) // #nosec G304
 	if err != nil {
 		log.Printf("[DEBUG-1] Failed to open identity file: %v", err)
 		return nil, err

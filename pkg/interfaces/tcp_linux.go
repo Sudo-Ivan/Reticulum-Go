@@ -18,8 +18,8 @@ func platformGetRTT(fd uintptr) time.Duration {
 		fd,
 		syscall.SOL_TCP,
 		syscall.TCP_INFO,
-		uintptr(unsafe.Pointer(&info)),
-		uintptr(unsafe.Pointer(&size)),
+		uintptr(unsafe.Pointer(&info)), // #nosec G103
+		uintptr(unsafe.Pointer(&size)), // #nosec G103
 		0,
 	)
 

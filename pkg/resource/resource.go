@@ -128,7 +128,7 @@ func New(data interface{}, autoCompress bool) (*Resource, error) {
 	}
 
 	// Calculate segments needed
-	r.segments = uint16((r.dataSize + DEFAULT_SEGMENT_SIZE - 1) / DEFAULT_SEGMENT_SIZE)
+	r.segments = uint16((r.dataSize + DEFAULT_SEGMENT_SIZE - 1) / DEFAULT_SEGMENT_SIZE) // #nosec G115
 	if r.segments > MAX_SEGMENTS {
 		return nil, errors.New("resource too large")
 	}

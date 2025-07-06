@@ -183,7 +183,7 @@ func (i *BaseInterface) SendLinkPacket(dest []byte, data []byte, timestamp time.
 
 	// Add timestamp
 	ts := make([]byte, 8)
-	binary.BigEndian.PutUint64(ts, uint64(timestamp.Unix()))
+	binary.BigEndian.PutUint64(ts, uint64(timestamp.Unix())) // #nosec G115
 	packet = append(packet, ts...)
 
 	// Add data

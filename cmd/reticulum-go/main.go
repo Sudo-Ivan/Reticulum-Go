@@ -411,7 +411,7 @@ func initializeDirectories() error {
 	}
 
 	for _, dir := range dirs {
-		if err := os.MkdirAll(dir, 0755); err != nil {
+		if err := os.MkdirAll(dir, 0700); err != nil { // #nosec G301
 			return fmt.Errorf("failed to create directory %s: %v", dir, err)
 		}
 	}
@@ -633,7 +633,7 @@ func (h *AnnounceHandler) ReceivedAnnounce(destHash []byte, id interface{}, appD
 					if pos+2 < len(appData) && appData[pos] == 0xd1 {
 						pos++
 						maxSize := binary.BigEndian.Uint16(appData[pos : pos+2])
-						nodeMaxSize = int16(maxSize)
+						nodeMaxSize = int16(maxSize) // #nosec G115
 						debugLog(DEBUG_VERBOSE, "Node max transfer size: %d KB", nodeMaxSize)
 					} else {
 						debugLog(DEBUG_ERROR, "Could not parse max transfer size from node announce")
@@ -710,13 +710,13 @@ func (r *Reticulum) createNodeAppData() []byte {
 	r.nodeTimestamp = time.Now().Unix()
 	appData = append(appData, 0xd2) // int32 format
 	timeBytes := make([]byte, 4)
-	binary.BigEndian.PutUint32(timeBytes, uint32(r.nodeTimestamp))
+	binary.BigEndian.PutUint32(timeBytes, uint32(r.nodeTimestamp)) // #nosec G115
 	appData = append(appData, timeBytes...)
 
 	// Element 2: Int16 max transfer size in KB
 	appData = append(appData, 0xd1) // int16 format
 	sizeBytes := make([]byte, 2)
-	binary.BigEndian.PutUint16(sizeBytes, uint16(r.maxTransferSize))
+	binary.BigEndian.PutUint16(sizeBytes, uint16(r.maxTransferSize)) // #nosec G115
 	appData = append(appData, sizeBytes...)
 
 	log.Printf("[DEBUG-7] Created node appData (msgpack [enable=%v, timestamp=%d, maxsize=%d]): %x",

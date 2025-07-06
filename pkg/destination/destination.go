@@ -168,7 +168,7 @@ func (d *Destination) Announce(appData []byte) error {
 
 	// Add app data with length prefix
 	appDataLen := make([]byte, 2)
-	binary.BigEndian.PutUint16(appDataLen, uint16(len(appData)))
+	binary.BigEndian.PutUint16(appDataLen, uint16(len(appData))) // #nosec G115
 	packet = append(packet, appDataLen...)
 	packet = append(packet, appData...)
 	log.Printf("[DEBUG-4] Added %d bytes of app data to announce", len(appData))

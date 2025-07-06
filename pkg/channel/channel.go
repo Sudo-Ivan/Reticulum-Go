@@ -2,6 +2,7 @@ package channel
 
 import (
 	"errors"
+	"log"
 	"math"
 	"sync"
 	"time"
@@ -138,7 +139,14 @@ func (c *Channel) handleTimeout(packet interface{}) {
 				return
 			}
 			env.Tries++
-			c.link.Resend(packet)
+			if err := c.link.Resend(packet); err != nil { // #nosec G104
+				// Handle resend error, e.g., log it or mark envelope as failed
+				log.Printf("Failed to resend packet: %v", err)
+				// Optionally, mark the envelope as failed or remove it from txRing
+				// env.State = MsgStateFailed
+				// c.txRing = append(c.txRing[:i], c.txRing[i+1:]...)
+				return
+			}
 			timeout := c.getPacketTimeout(env.Tries)
 			c.link.SetPacketTimeout(packet, c.handleTimeout, timeout)
 			break

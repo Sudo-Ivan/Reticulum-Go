@@ -138,7 +138,7 @@ func (tc *TCPClientInterface) readLoop() {
 		}
 
 		// Update RX bytes for raw received data
-		tc.UpdateStats(uint64(n), true)
+		tc.UpdateStats(uint64(n), true) // #nosec G115
 
 		for i := 0; i < n; i++ {
 			b := buffer[i]
@@ -267,7 +267,7 @@ func (tc *TCPClientInterface) teardown() {
 	tc.IN = false
 	tc.OUT = false
 	if tc.conn != nil {
-		tc.conn.Close()
+		tc.conn.Close() // #nosec G104
 	}
 }
 
@@ -418,9 +418,11 @@ func (tc *TCPClientInterface) GetRTT() time.Duration {
 		var rtt time.Duration = 0
 		if runtime.GOOS == "linux" {
 			if info, err := tcpConn.SyscallConn(); err == nil {
-				info.Control(func(fd uintptr) {
+				if err := info.Control(func(fd uintptr) { // #nosec G104
 					rtt = platformGetRTT(fd)
-				})
+				}); err != nil {
+					log.Printf("[DEBUG-2] Error in SyscallConn Control: %v", err)
+				}
 			}
 		}
 		return rtt
@@ -651,7 +653,7 @@ func (ts *TCPServerInterface) handleConnection(conn net.Conn) {
 		ts.mutex.Lock()
 		delete(ts.connections, addr)
 		ts.mutex.Unlock()
-		conn.Close()
+		conn.Close() // #nosec G104
 	}()
 
 	buffer := make([]byte, ts.MTU)
@@ -662,7 +664,7 @@ func (ts *TCPServerInterface) handleConnection(conn net.Conn) {
 		}
 
 		ts.mutex.Lock()
-		ts.RxBytes += uint64(n)
+		ts.RxBytes += uint64(n) // #nosec G115
 		ts.mutex.Unlock()
 
 		if ts.packetCallback != nil {

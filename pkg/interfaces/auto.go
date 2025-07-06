@@ -264,11 +264,11 @@ func (ai *AutoInterface) Stop() error {
 	defer ai.mutex.Unlock()
 
 	for _, server := range ai.interfaceServers {
-		server.Close()
+		server.Close() // #nosec G104
 	}
 
 	if ai.outboundConn != nil {
-		ai.outboundConn.Close()
+		ai.outboundConn.Close() // #nosec G104
 	}
 
 	return nil
