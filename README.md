@@ -11,7 +11,9 @@
 
 Aiming to be fully compatible with the Python version. 
 
-# Testing
+## Usage
+
+Requires Go 1.24+
 
 ```
 make install
@@ -29,4 +31,4 @@ revive -config revive.toml -formatter friendly ./pkg/* ./cmd/* ./internal/*
 
 ## External Packages
 
-- `golang.org/x/crypto` `v0.37.0` - Cryptographic primitives
+- `golang.org/x/crypto` `v0.39.0` - Cryptographic primitives
