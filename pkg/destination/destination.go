@@ -2,12 +2,12 @@ package destination
 
 import (
 	"crypto/sha256"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"log"
 	"sync"
 
+	"github.com/Sudo-Ivan/reticulum-go/pkg/announce"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/common"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/identity"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/transport"
@@ -60,6 +60,7 @@ type Destination struct {
 	appName   string
 	aspects   []string
 	hashValue []byte
+	transport *transport.Transport
 
 	acceptsLinks  bool
 	proofStrategy byte
@@ -84,7 +85,7 @@ func debugLog(level int, format string, v ...interface{}) {
 	log.Printf("[DEBUG-%d] %s", level, fmt.Sprintf(format, v...))
 }
 
-func New(id *identity.Identity, direction byte, destType byte, appName string, aspects ...string) (*Destination, error) {
+func New(id *identity.Identity, direction byte, destType byte, appName string, transport *transport.Transport, aspects ...string) (*Destination, error) {
 	debugLog(DEBUG_INFO, "Creating new destination: app=%s type=%d direction=%d", appName, destType, direction)
 
 	if id == nil {
@@ -98,6 +99,7 @@ func New(id *identity.Identity, direction byte, destType byte, appName string, a
 		destType:        destType,
 		appName:         appName,
 		aspects:         aspects,
+		transport:       transport,
 		acceptsLinks:    false,
 		proofStrategy:   PROVE_NONE,
 		ratchetCount:    RATCHET_COUNT,
@@ -142,61 +144,42 @@ func (d *Destination) Announce(appData []byte) error {
 	d.mutex.Lock()
 	defer d.mutex.Unlock()
 
-	log.Printf("[DEBUG-4] Creating announce packet for destination %s", d.ExpandName())
+	log.Printf("[DEBUG-4] Announcing destination %s", d.ExpandName())
 
-	// If no specific appData provided, use default
 	if appData == nil {
-		log.Printf("[DEBUG-4] Using default app data for announce")
 		appData = d.defaultAppData
 	}
 
-	// Create announce packet
-	packet := make([]byte, 0, 256) // Pre-allocate reasonable size
+	// Create a new Announce instance
+	announce, err := announce.New(d.identity, appData, false, d.transport.GetConfig())
+	if err != nil {
+		return fmt.Errorf("failed to create announce: %w", err)
+	}
 
-	// Add packet type and header
-	packet = append(packet, 0x01) // PACKET_TYPE_ANNOUNCE
-	packet = append(packet, 0x00) // Initial hop count
+	// Get the packet from the announce instance
+	packet := announce.GetPacket()
+	if packet == nil {
+		return errors.New("failed to create announce packet")
+	}
 
-	// Add destination hash (16 bytes)
-	packet = append(packet, d.hashValue...)
-	log.Printf("[DEBUG-4] Added destination hash %x to announce", d.hashValue[:8])
+	// Send announce packet to all interfaces
+	log.Printf("[DEBUG-4] Sending announce packet to all interfaces")
+	if d.transport == nil {
+		return errors.New("transport not initialized")
+	}
 
-	// Add identity public key (32 bytes)
-	pubKey := d.identity.GetPublicKey()
-	packet = append(packet, pubKey...)
-	log.Printf("[DEBUG-4] Added public key %x to announce", pubKey[:8])
-
-	// Add app data with length prefix
-	appDataLen := make([]byte, 2)
-	binary.BigEndian.PutUint16(appDataLen, uint16(len(appData))) // #nosec G115
-	packet = append(packet, appDataLen...)
-	packet = append(packet, appData...)
-	log.Printf("[DEBUG-4] Added %d bytes of app data to announce", len(appData))
-
-	// Add ratchet data if enabled
-	if d.ratchetsEnabled {
-		log.Printf("[DEBUG-4] Adding ratchet data to announce")
-		ratchetKey := d.identity.GetCurrentRatchetKey()
-		if ratchetKey == nil {
-			log.Printf("[DEBUG-3] Failed to get current ratchet key")
-			return errors.New("failed to get current ratchet key")
+	interfaces := d.transport.GetInterfaces()
+	var lastErr error
+	for _, iface := range interfaces {
+		if iface.IsEnabled() && iface.IsOnline() {
+			if err := iface.Send(packet, ""); err != nil {
+				log.Printf("[ERROR] Failed to send announce on interface %s: %v", iface.GetName(), err)
+				lastErr = err
+			}
 		}
-		packet = append(packet, ratchetKey...)
-		log.Printf("[DEBUG-4] Added ratchet key %x to announce", ratchetKey[:8])
 	}
 
-	// Sign the announce packet (64 bytes)
-	signData := append(d.hashValue, appData...)
-	if d.ratchetsEnabled {
-		signData = append(signData, d.identity.GetCurrentRatchetKey()...)
-	}
-	signature := d.identity.Sign(signData)
-	packet = append(packet, signature...)
-	log.Printf("[DEBUG-4] Added signature to announce packet (total size: %d bytes)", len(packet))
-
-	// Send announce packet through transport
-	log.Printf("[DEBUG-4] Sending announce packet through transport layer")
-	return transport.SendAnnounce(packet)
+	return lastErr
 }
 
 func (d *Destination) AcceptsLinks(accepts bool) {
