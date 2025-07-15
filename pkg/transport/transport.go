@@ -1156,3 +1156,7 @@ func (t *Transport) GetInterfaces() map[string]common.NetworkInterface {
 
 	return interfaces
 }
+
+func (t *Transport) GetConfig() *common.ReticulumConfig {
+	return t.config
+}
