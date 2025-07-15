@@ -49,7 +49,7 @@ func EncryptAES256CBC(key, plaintext []byte) ([]byte, error) {
 	}
 
 	// Encrypt the data.
-	mode := cipher.NewCBCEncrypter(block, iv)
+	mode := cipher.NewCBCEncrypter(block, iv) // #nosec G407
 	ciphertext := make([]byte, len(padtext))
 	mode.CryptBlocks(ciphertext, padtext)
 

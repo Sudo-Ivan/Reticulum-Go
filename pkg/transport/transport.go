@@ -448,7 +448,7 @@ func (t *Transport) HandleAnnounce(data []byte, sourceIface common.NetworkInterf
 		log.Printf("[DEBUG-7] Failed to generate random delay: %v", err)
 		delay = time.Duration(0) // Default to no delay on error
 	} else {
-		delay = time.Duration(binary.BigEndian.Uint64(b)%2000) * time.Millisecond // 0-2000 ms #nosec G115
+                delay = time.Duration(binary.BigEndian.Uint64(b)%2000) * time.Millisecond // #nosec G115
 	}
 	time.Sleep(delay)
 
@@ -749,7 +749,7 @@ func (t *Transport) handleAnnouncePacket(data []byte, iface common.NetworkInterf
 		log.Printf("[DEBUG-7] Failed to generate random delay: %v", err)
 		delay = time.Duration(0) // Default to no delay on error
 	} else {
-		delay = time.Duration(binary.BigEndian.Uint64(b)%2000) * time.Millisecond // 0-2000 ms #nosec G115
+		delay = time.Duration(binary.BigEndian.Uint64(b)%2000) * time.Millisecond // #nosec G115
 	}
 	time.Sleep(delay)
 

@@ -361,7 +361,10 @@ func (a *Announce) CreatePacket() []byte {
 
 	// 5.3 Random Hash
 	randomHash := make([]byte, 10)
-	rand.Read(randomHash)
+	_, err := rand.Read(randomHash)
+	if err != nil {
+		log.Printf("Error reading random bytes for announce: %v", err)
+	}
 
 	// 5.4 Ratchet
 	ratchetData := make([]byte, 32)
