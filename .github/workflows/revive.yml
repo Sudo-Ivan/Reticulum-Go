@@ -1,0 +1,35 @@
+name: Go Revive Lint
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.24'
+
+    - name: Install revive
+      run: go install github.com/mgechev/revive@latest
+
+    - name: Run revive and generate SARIF report
+      run: |
+        revive -config revive.toml -formatter sarif ./... > revive-results.sarif || true
+
+    - name: Upload SARIF report
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: revive-results.sarif
