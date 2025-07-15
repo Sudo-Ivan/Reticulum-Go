@@ -41,16 +41,16 @@ jobs:
         GOARCH: ${{ matrix.goarch }}
         GOARM: ${{ matrix.goarch == 'arm' && '6' || '' }}
       run: |
-        output_name="arcgis-utils-go-${GOOS}-${GOARCH}"
+        output_name="reticulum-go-${GOOS}-${GOARCH}"
         if [ "$GOOS" = "windows" ]; then
           output_name+=".exe"
         fi
-        go build -v -ldflags="-s -w" -o "${output_name}" ./cmd/arcgis-utils
+        go build -v -ldflags="-s -w" -o "${output_name}" ./cmd/reticulum-go
         echo "Built: ${output_name}"
 
     - name: Calculate SHA256 Checksum
       run: |
-        output_name="arcgis-utils-go-${{ matrix.goos }}-${{ matrix.goarch }}"
+        output_name="reticulum-go-${{ matrix.goos }}-${{ matrix.goarch }}"
         if [ "${{ matrix.goos }}" = "windows" ]; then
           output_name+=".exe"
         fi
@@ -60,8 +60,8 @@ jobs:
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: arcgis-utils-go-${{ matrix.goos }}-${{ matrix.goarch }}
-        path: arcgis-utils-go-${{ matrix.goos }}-${{ matrix.goarch }}*
+        name: reticulum-go-${{ matrix.goos }}-${{ matrix.goarch }}
+        path: reticulum-go-${{ matrix.goos }}-${{ matrix.goarch }}*
 
   release:
     name: Create Release
