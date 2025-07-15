@@ -12,6 +12,7 @@ import (
 
 	"github.com/Sudo-Ivan/reticulum-go/pkg/common"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/identity"
+	"golang.org/x/crypto/curve25519"
 )
 
 const (
@@ -96,7 +97,10 @@ func New(dest *identity.Identity, appData []byte, pathResponse bool, config *com
 	// Get current ratchet ID if enabled
 	currentRatchet := dest.GetCurrentRatchetKey()
 	if currentRatchet != nil {
-		a.ratchetID = dest.GetRatchetID(currentRatchet)
+		ratchetPub, err := curve25519.X25519(currentRatchet, curve25519.Basepoint)
+		if err == nil {
+			a.ratchetID = dest.GetRatchetID(ratchetPub)
+		}
 	}
 
 	// Sign announce data
@@ -318,104 +322,82 @@ func CreateHeader(ifacFlag byte, headerType byte, contextFlag byte, propType byt
 }
 
 func (a *Announce) CreatePacket() []byte {
-	// Create header
+	// This function creates the complete announce packet according to the Reticulum specification.
+	// Announce Packet Structure:
+	// [Header (2 bytes)][Dest Hash (16 bytes)][Transport ID (16 bytes)][Context (1 byte)][Announce Data]
+	// Announce Data Structure:
+	// [Public Key (32 bytes)][Signing Key (32 bytes)][Name Hash (10 bytes)][Random Hash (10 bytes)][Ratchet (32 bytes)][Signature (64 bytes)][App Data]
+
+	// 1. Create Header
 	header := CreateHeader(
 		IFAC_NONE,
-		HEADER_TYPE_2, // Use header type 2 for announces
-		0,             // No context flag
+		HEADER_TYPE_2,
+		0, // No context flag for announce
 		PROP_TYPE_BROADCAST,
 		DEST_TYPE_SINGLE,
 		PACKET_TYPE_ANNOUNCE,
 		a.hops,
 	)
 
-	packet := header
+	// 2. Destination Hash
+	destHash := a.identity.Hash()
 
-	// Add destination hash (16 bytes)
-	packet = append(packet, a.destinationHash...)
-
-	// If using header type 2, add transport ID (16 bytes)
-	// For broadcast announces, this is filled with zeroes
+	// 3. Transport ID (zeros for broadcast announce)
 	transportID := make([]byte, 16)
-	packet = append(packet, transportID...)
 
-	// Add context byte
-	packet = append(packet, byte(0)) // Context byte, 0 for announces
+	// 4. Context Byte (zero for announce)
+	contextByte := byte(0)
 
-	// Add public key parts (32 bytes each)
+	// 5. Announce Data
+	// 5.1 Public Keys
 	pubKey := a.identity.GetPublicKey()
-	encKey := pubKey[:32]  // Encryption key
-	signKey := pubKey[32:] // Signing key
+	encKey := pubKey[:32]
+	signKey := pubKey[32:]
 
-	// Start building data portion according to spec
-	data := make([]byte, 0, 32+32+10+10+32+64+len(a.appData))
-	data = append(data, encKey...)  // Encryption key (32 bytes)
-	data = append(data, signKey...) // Signing key (32 bytes)
-
-	// Determine if this is a node announce based on appData format
-	var appName string
-	if len(a.appData) > 2 && a.appData[0] == 0x93 {
-		// This is a node announcement
-		appName = "reticulum.node"
-	} else if len(a.appData) > 3 && a.appData[0] == 0x92 && a.appData[1] == 0xc4 {
-		nameLen := int(a.appData[2])
-		if 3+nameLen <= len(a.appData) {
-			appName = string(a.appData[3 : 3+nameLen])
-		} else {
-			appName = fmt.Sprintf("%s.%s", a.config.AppName, a.config.AppAspect)
-		}
-	} else {
-		// Default fallback using config values
-		appName = fmt.Sprintf("%s.%s", a.config.AppName, a.config.AppAspect)
-	}
-
-	// Add name hash (10 bytes)
+	// 5.2 Name Hash
+	appName := fmt.Sprintf("%s.%s", a.config.AppName, a.config.AppAspect)
 	nameHash := sha256.Sum256([]byte(appName))
 	nameHash10 := nameHash[:10]
-	log.Printf("[DEBUG-6] Using name hash for '%s': %x", appName, nameHash10)
-	data = append(data, nameHash10...)
 
-	// Add random hash (10 bytes) - 5 bytes random + 5 bytes time
+	// 5.3 Random Hash
 	randomHash := make([]byte, 10)
-	_, err := rand.Read(randomHash[:5]) // #nosec G104
-	if err != nil {
-		log.Printf("[DEBUG-7] Failed to read random bytes for hash: %v", err)
-		return nil // Or handle the error appropriately
-	}
-	timeBytes := make([]byte, 8)
-	binary.BigEndian.PutUint64(timeBytes, uint64(time.Now().Unix())) // #nosec G115
-	copy(randomHash[5:], timeBytes[:5])
-	data = append(data, randomHash...)
+	rand.Read(randomHash)
 
-	// Add ratchet ID (32 bytes) - required in the packet format
-	if a.ratchetID != nil {
-		data = append(data, a.ratchetID...)
-	} else {
-		// If there's no ratchet, add 32 zero bytes as placeholder
-		data = append(data, make([]byte, 32)...)
+	// 5.4 Ratchet
+	ratchetData := make([]byte, 32)
+	currentRatchetKey := a.identity.GetCurrentRatchetKey()
+	if currentRatchetKey != nil {
+		ratchetPub, err := curve25519.X25519(currentRatchetKey, curve25519.Basepoint)
+		if err == nil {
+			copy(ratchetData, ratchetPub)
+		}
 	}
 
-	// Create validation data for signature
-	// Signature consists of destination hash, public keys, name hash, random hash, and app data
+	// 5.5 Signature
+	// The signature is calculated over: Dest Hash + Public Keys + Name Hash + Random Hash + Ratchet + App Data
 	validationData := make([]byte, 0)
-	validationData = append(validationData, a.destinationHash...)
+	validationData = append(validationData, destHash...)
 	validationData = append(validationData, encKey...)
 	validationData = append(validationData, signKey...)
 	validationData = append(validationData, nameHash10...)
 	validationData = append(validationData, randomHash...)
+	validationData = append(validationData, ratchetData...)
 	validationData = append(validationData, a.appData...)
-
-	// Add signature (64 bytes)
 	signature := a.identity.Sign(validationData)
-	data = append(data, signature...)
 
-	// Add app data
-	if len(a.appData) > 0 {
-		data = append(data, a.appData...)
-	}
-
-	// Combine header and data
-	packet = append(packet, data...)
+	// 6. Assemble the packet
+	packet := make([]byte, 0)
+	packet = append(packet, header...)
+	packet = append(packet, destHash...)
+	packet = append(packet, transportID...)
+	packet = append(packet, contextByte)
+	packet = append(packet, encKey...)
+	packet = append(packet, signKey...)
+	packet = append(packet, nameHash10...)
+	packet = append(packet, randomHash...)
+	packet = append(packet, ratchetData...)
+	packet = append(packet, signature...)
+	packet = append(packet, a.appData...)
 
 	return packet
 }
