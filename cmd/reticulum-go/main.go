@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/Sudo-Ivan/reticulum-go/internal/config"
-	"github.com/Sudo-Ivan/reticulum-go/pkg/announce"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/buffer"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/channel"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/common"
@@ -109,6 +108,7 @@ func NewReticulum(cfg *common.ReticulumConfig) (*Reticulum, error) {
 		destination.IN,
 		destination.SINGLE,
 		"reticulum",
+		t,
 		"node",
 	)
 	if err != nil {
@@ -138,7 +138,10 @@ func NewReticulum(cfg *common.ReticulumConfig) (*Reticulum, error) {
 
 	// Enable destination features
 	dest.AcceptsLinks(true)
-	dest.EnableRatchets("") // Empty string for default path
+	// Enable ratchets and point to a file for persistence.
+	// The actual path should probably be configurable.
+	ratchetPath := ".reticulum-go/storage/ratchets/" + r.identity.GetHexHash()
+	dest.EnableRatchets(ratchetPath)
 	dest.SetProofStrategy(destination.PROVE_APP)
 	debugLog(DEBUG_VERBOSE, "Configured destination features")
 
@@ -300,48 +303,6 @@ func main() {
 		log.Fatalf("Failed to start Reticulum: %v", err)
 	}
 
-	// Start periodic announces
-	go func() {
-		ticker := time.NewTicker(5 * time.Minute) // Adjust interval as needed
-		defer ticker.Stop()
-
-		for range ticker.C {
-			debugLog(3, "Starting periodic announce cycle")
-
-			// Create a new announce packet for this cycle
-			periodicAnnounce, err := announce.NewAnnounce(
-				r.identity,
-				r.createNodeAppData(),
-				nil, // No ratchet ID for now
-				false,
-				r.config,
-			)
-			if err != nil {
-				debugLog(1, "Failed to create periodic announce: %v", err)
-				continue
-			}
-
-			// Propagate announce to all online interfaces
-			var onlineInterfaces []common.NetworkInterface
-			for _, iface := range r.interfaces {
-				if netIface, ok := iface.(common.NetworkInterface); ok {
-					if netIface.IsEnabled() && netIface.IsOnline() {
-						onlineInterfaces = append(onlineInterfaces, netIface)
-					}
-				}
-			}
-
-			if len(onlineInterfaces) > 0 {
-				debugLog(2, "Sending periodic announce on %d interfaces", len(onlineInterfaces))
-				if err := periodicAnnounce.Propagate(onlineInterfaces); err != nil {
-					debugLog(1, "Failed to propagate periodic announce: %v", err)
-				}
-			} else {
-				debugLog(3, "No online interfaces for periodic announce")
-			}
-		}
-	}()
-
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	<-sigChan
@@ -446,70 +407,26 @@ func (r *Reticulum) Start() error {
 	// Wait for interfaces to initialize
 	time.Sleep(2 * time.Second)
 
-	// Send initial announce once per interface
-	initialAnnounce, err := announce.NewAnnounce(
-		r.identity,
-		r.createNodeAppData(),
-		nil,
-		false,
-		r.config,
-	)
-	if err != nil {
-		return fmt.Errorf("failed to create announce: %v", err)
+	// Send initial announce
+	debugLog(2, "Sending initial announce")
+	if err := r.destination.Announce(r.createNodeAppData()); err != nil {
+		debugLog(1, "Failed to send initial announce: %v", err)
 	}
 
-	for _, iface := range r.interfaces {
-		if netIface, ok := iface.(common.NetworkInterface); ok {
-			if netIface.IsEnabled() && netIface.IsOnline() {
-				debugLog(2, "Sending initial announce on interface %s", netIface.GetName())
-				if err := initialAnnounce.Propagate([]common.NetworkInterface{netIface}); err != nil {
-					debugLog(1, "Failed to send initial announce on interface %s: %v", netIface.GetName(), err)
-				}
-				// Add delay between interfaces
-				time.Sleep(100 * time.Millisecond)
-			}
-		}
-	}
-
-	// Start periodic announce goroutine with rate limiting
+	// Start periodic announce goroutine
 	go func() {
-		ticker := time.NewTicker(ANNOUNCE_RATE_TARGET * time.Second)
-		defer ticker.Stop()
+		// Wait a bit before the first announce
+		time.Sleep(5 * time.Second)
 
-		announceCount := 0
-		for range ticker.C {
-			announceCount++
-			debugLog(3, "Starting periodic announce cycle #%d", announceCount)
-
-			periodicAnnounce, err := announce.NewAnnounce(
-				r.identity,
-				r.createNodeAppData(),
-				nil,
-				false,
-				r.config,
-			)
+		for {
+			debugLog(3, "Announcing destination...")
+			err := r.destination.Announce(r.createNodeAppData())
 			if err != nil {
-				debugLog(1, "Failed to create periodic announce: %v", err)
-				continue
+				debugLog(1, "Could not send announce: %v", err)
 			}
 
-			// Send to each interface with rate limiting
-			for _, iface := range r.interfaces {
-				if netIface, ok := iface.(common.NetworkInterface); ok {
-					if netIface.IsEnabled() && netIface.IsOnline() {
-						// Apply rate limiting after grace period
-						if announceCount > ANNOUNCE_RATE_GRACE {
-							time.Sleep(time.Duration(ANNOUNCE_RATE_PENALTY) * time.Second)
-						}
-
-						debugLog(2, "Sending periodic announce on interface %s", netIface.GetName())
-						if err := periodicAnnounce.Propagate([]common.NetworkInterface{netIface}); err != nil {
-							debugLog(1, "Failed to send periodic announce on interface %s: %v", netIface.GetName(), err)
-							continue
-						}
-					}
-				}
-			}
+			// Announce every 5 minutes
+			time.Sleep(5 * time.Minute)
 		}
 	}()
 
