@@ -8,6 +8,7 @@
 ![Run Gosec](https://github.com/Sudo-Ivan/Reticulum-Go/actions/workflows/gosec.yml/badge.svg)
 [![Bearer](https://github.com/Sudo-Ivan/Reticulum-Go/actions/workflows/bearer.yml/badge.svg)](https://github.com/Sudo-Ivan/Reticulum-Go/actions/workflows/bearer.yml)
 [![Go Build Multi-Platform](https://github.com/Sudo-Ivan/Reticulum-Go/actions/workflows/build.yml/badge.svg)](https://github.com/Sudo-Ivan/Reticulum-Go/actions/workflows/build.yml)
+[![Go Revive Lint](https://github.com/Sudo-Ivan/Reticulum-Go/actions/workflows/revive.yml/badge.svg)](https://github.com/Sudo-Ivan/Reticulum-Go/actions/workflows/revive.yml)
 
 [Reticulum Network](https://github.com/markqvist/Reticulum) implementation in Go `1.24+`.
 
