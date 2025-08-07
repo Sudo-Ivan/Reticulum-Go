@@ -160,9 +160,9 @@ func NewReticulum(cfg *common.ReticulumConfig) (*Reticulum, error) {
 				name,
 				ifaceConfig.TargetHost,
 				ifaceConfig.TargetPort,
+				ifaceConfig.KISSFraming,
+				ifaceConfig.I2PTunneled,
 				ifaceConfig.Enabled,
-				true, // IN
-				true, // OUT
 			)
 		case "UDPInterface":
 			iface, err = interfaces.NewUDPInterface(
