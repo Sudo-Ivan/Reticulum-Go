@@ -2,14 +2,6 @@
 
 Be good to each other.
 
-## Development
-
-By contributing to this project you agree to the following:
-
-- All code must be tested using `gosec`.
-- All code must be formatted with `gofmt`.
-- All code must be documented.
-
 ## Communication
 
 Feel free to join our seperate matrix channel for this implementation.
