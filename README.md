@@ -24,6 +24,13 @@ make build
 make run
 ```
 
+### Using Go
+
+```bash
+go install github.com/Sudo-Ivan/reticulum-go/cmd/reticulum-go@latest
+
+```
+
 ## Linter
 
 [Revive](https://github.com/mgechev/revive)
