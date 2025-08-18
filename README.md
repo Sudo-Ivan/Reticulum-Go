@@ -14,6 +14,8 @@
 
 Aiming to be fully compatible with the Python version. 
 
+Feel free to join our seperate [matrix](https://matrix.to/#/#reticulum-go-dev:matrix.org) channel for this implementation.
+
 ## Usage
 
 Requires Go 1.24+
