@@ -41,6 +41,6 @@ go install github.com/Sudo-Ivan/reticulum-go/cmd/reticulum-go@latest
 revive -config revive.toml -formatter friendly ./pkg/* ./cmd/* ./internal/*
 ```
 
-## External Packages
+## Cryptographic Libraries
 
-- `golang.org/x/crypto` `v0.39.0` - Cryptographic primitives
+- `golang.org/x/crypto` `v0.41.0` - Cryptographic primitives
