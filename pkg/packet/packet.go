@@ -126,6 +126,8 @@ func (p *Packet) Pack() error {
 	header := []byte{flags, p.Hops}
 	log.Printf("[DEBUG-5] Created packet header: flags=%08b, hops=%d", flags, p.Hops)
 
+	header = append(header, p.DestinationHash...)
+	
 	if p.HeaderType == HeaderType2 {
 		if p.TransportID == nil {
 			return errors.New("transport ID required for header type 2")
@@ -134,7 +136,6 @@ func (p *Packet) Pack() error {
 		log.Printf("[DEBUG-7] Added transport ID to header: %x", p.TransportID)
 	}
 
-	header = append(header, p.DestinationHash...)
 	header = append(header, p.Context)
 	log.Printf("[DEBUG-6] Final header length: %d bytes", len(header))
 
@@ -168,14 +169,16 @@ func (p *Packet) Unpack() error {
 	dstLen := 16 // Truncated hash length
 
 	if p.HeaderType == HeaderType2 {
+		// Header Type 2: Header(2) + DestHash(16) + TransportID(16) + Context(1) + Data
 		if len(p.Raw) < 2*dstLen+3 {
 			return errors.New("packet too short for header type 2")
 		}
-		p.TransportID = p.Raw[2 : dstLen+2]
-		p.DestinationHash = p.Raw[dstLen+2 : 2*dstLen+2]
+		p.DestinationHash = p.Raw[2 : dstLen+2]           // Destination hash first
+		p.TransportID = p.Raw[dstLen+2 : 2*dstLen+2]      // Transport ID second
 		p.Context = p.Raw[2*dstLen+2]
 		p.Data = p.Raw[2*dstLen+3:]
 	} else {
+		// Header Type 1: Header(2) + DestHash(16) + Context(1) + Data
 		if len(p.Raw) < dstLen+3 {
 			return errors.New("packet too short for header type 1")
 		}
