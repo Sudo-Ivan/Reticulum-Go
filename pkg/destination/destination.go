@@ -1,7 +1,6 @@
 package destination
 
 import (
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"log"
@@ -117,19 +116,20 @@ func New(id *identity.Identity, direction byte, destType byte, appName string, t
 func (d *Destination) calculateHash() []byte {
 	debugLog(DEBUG_TRACE, "Calculating hash for destination %s", d.ExpandName())
 
-	nameHash := sha256.Sum256([]byte(d.ExpandName()))
-	identityHash := sha256.Sum256(d.identity.GetPublicKey())
+	// hash identity first, then concatenate with name hash and truncate
+	identityHash := identity.TruncatedHash(d.identity.GetPublicKey())
+	nameHash := identity.TruncatedHash([]byte(d.ExpandName()))
 
-	debugLog(DEBUG_ALL, "Name hash: %x", nameHash)
 	debugLog(DEBUG_ALL, "Identity hash: %x", identityHash)
+	debugLog(DEBUG_ALL, "Name hash: %x", nameHash)
 
-	combined := append(nameHash[:], identityHash[:]...)
-	finalHash := sha256.Sum256(combined)
+	// Concatenate identity hash + name hash
+	combined := append(identityHash, nameHash...)
+	finalHash := identity.TruncatedHash(combined)
 
-	truncated := finalHash[:16]
-	debugLog(DEBUG_VERBOSE, "Calculated destination hash: %x", truncated)
+	debugLog(DEBUG_VERBOSE, "Calculated destination hash: %x", finalHash)
 
-	return truncated
+	return finalHash
 }
 
 func (d *Destination) ExpandName() string {
@@ -169,13 +169,21 @@ func (d *Destination) Announce(appData []byte) error {
 	}
 
 	interfaces := d.transport.GetInterfaces()
+	log.Printf("[DEBUG-7] Got %d interfaces from transport", len(interfaces))
+	
 	var lastErr error
-	for _, iface := range interfaces {
+	for name, iface := range interfaces {
+		log.Printf("[DEBUG-7] Checking interface %s: enabled=%v, online=%v", name, iface.IsEnabled(), iface.IsOnline())
 		if iface.IsEnabled() && iface.IsOnline() {
+			log.Printf("[DEBUG-7] Sending announce to interface %s (%d bytes)", name, len(packet))
 			if err := iface.Send(packet, ""); err != nil {
-				log.Printf("[ERROR] Failed to send announce on interface %s: %v", iface.GetName(), err)
+				log.Printf("[ERROR] Failed to send announce on interface %s: %v", name, err)
 				lastErr = err
+			} else {
+				log.Printf("[DEBUG-7] Successfully sent announce to interface %s", name)
 			}
+		} else {
+			log.Printf("[DEBUG-7] Skipping interface %s (not enabled or not online)", name)
 		}
 	}
 
