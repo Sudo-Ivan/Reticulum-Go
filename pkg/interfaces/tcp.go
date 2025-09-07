@@ -238,6 +238,23 @@ func (tc *TCPClientInterface) handlePacket(data []byte) {
 	}
 }
 
+// Send implements the interface Send method for TCP interface
+func (tc *TCPClientInterface) Send(data []byte, address string) error {
+	log.Printf("[DEBUG-7] TCP interface %s: Sending %d bytes", tc.Name, len(data))
+	
+	if !tc.IsEnabled() || !tc.IsOnline() {
+		return fmt.Errorf("TCP interface %s is not online", tc.Name)
+	}
+
+	// For TCP interface, we need to prepend a packet type byte for announce packets
+	// RNS TCP protocol expects: [packet_type][data]
+	frame := make([]byte, 0, len(data)+1)
+	frame = append(frame, 0x01) // Announce packet type
+	frame = append(frame, data...)
+
+	return tc.ProcessOutgoing(frame)
+}
+
 func (tc *TCPClientInterface) ProcessOutgoing(data []byte) error {
 	if !tc.Online {
 		return fmt.Errorf("interface offline")
@@ -257,8 +274,12 @@ func (tc *TCPClientInterface) ProcessOutgoing(data []byte) error {
 
 	// Update TX stats before sending
 	tc.UpdateStats(uint64(len(frame)), false)
-
+	
+	log.Printf("[DEBUG-7] TCP interface %s: Writing %d bytes to network", tc.Name, len(frame))
 	_, err := tc.conn.Write(frame)
+	if err != nil {
+		log.Printf("[DEBUG-1] TCP interface %s: Write failed: %v", tc.Name, err)
+	}
 	return err
 }
 
