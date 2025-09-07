@@ -107,7 +107,7 @@ func NewReticulum(cfg *common.ReticulumConfig) (*Reticulum, error) {
 		identity,
 		destination.IN,
 		destination.SINGLE,
-		"reticulum",
+		"Go-Client",
 		t,
 		"node",
 	)
@@ -399,6 +399,12 @@ func (r *Reticulum) Start() error {
 		}
 
 		if netIface, ok := iface.(common.NetworkInterface); ok {
+			// Register interface with transport
+			if err := r.transport.RegisterInterface(iface.GetName(), netIface); err != nil {
+				debugLog(1, "Failed to register interface %s with transport: %v", iface.GetName(), err)
+			} else {
+				debugLog(3, "Registered interface %s with transport", iface.GetName())
+			}
 			r.handleInterface(netIface)
 		}
 		debugLog(3, "Interface %s started successfully", iface.GetName())
