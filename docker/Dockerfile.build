@@ -1,0 +1,26 @@
+FROM golang:1.24-alpine
+
+ENV CGO_ENABLED=0
+ENV GOOS=linux
+ENV GOARCH=amd64
+
+RUN apk add --no-cache git
+
+WORKDIR /build
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY cmd/ cmd/
+COPY internal/ internal/
+COPY pkg/ pkg/
+
+ARG BINARY_NAME=reticulum-go
+ARG BUILD_PATH=./cmd/reticulum-go
+
+RUN mkdir -p /dist && \
+    go build \
+    -ldflags='-w -s -extldflags "-static"' \
+    -a -installsuffix cgo \
+    -o /dist/${BINARY_NAME} \
+    ${BUILD_PATH}
