@@ -27,10 +27,10 @@ jobs:
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955
 
     - name: Set up Go
-      uses: actions/setup-go@v5
+      uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
       with:
         go-version: '1.24'
 
@@ -58,7 +58,7 @@ jobs:
         echo "Calculated SHA256 for ${output_name}"
 
     - name: Upload Artifact
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
       with:
         name: reticulum-go-${{ matrix.goos }}-${{ matrix.goarch }}
         path: reticulum-go-${{ matrix.goos }}-${{ matrix.goarch }}*
@@ -74,7 +74,7 @@ jobs:
 
     steps:
       - name: Download All Build Artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           path: ./release-assets
 
@@ -82,6 +82,6 @@ jobs:
         run: ls -R ./release-assets
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@6cbd405e2c4e67a21c47fa9e383d020e4e28b836
         with:
           files: ./release-assets/*/*
