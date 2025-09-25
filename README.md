@@ -17,7 +17,7 @@ Feel free to join our seperate [matrix](https://matrix.to/#/#reticulum-go-dev:ma
 
 ## Usage
 
-Requires Go 1.24+
+Requires Go 1.25+
 
 ```
 make install
@@ -42,4 +42,4 @@ revive -config revive.toml -formatter friendly ./pkg/* ./cmd/* ./internal/*
 
 ## Cryptographic Libraries
 
-- `golang.org/x/crypto` `v0.41.0` - Cryptographic primitives
+- `golang.org/x/crypto` `v0.42.0` - Cryptographic primitives
