@@ -9,17 +9,13 @@
 [![Go Build Multi-Platform](https://github.com/Sudo-Ivan/Reticulum-Go/actions/workflows/build.yml/badge.svg)](https://github.com/Sudo-Ivan/Reticulum-Go/actions/workflows/build.yml)
 [![Go Revive Lint](https://github.com/Sudo-Ivan/Reticulum-Go/actions/workflows/revive.yml/badge.svg)](https://github.com/Sudo-Ivan/Reticulum-Go/actions/workflows/revive.yml)
 
-[Reticulum Network](https://github.com/markqvist/Reticulum) implementation in Go `1.24+`.
+[Reticulum Network](https://github.com/markqvist/Reticulum) implementation in Go `1.25+`.
 
 Aiming to be fully compatible with the Python version. 
 
 Feel free to join our seperate [matrix](https://matrix.to/#/#reticulum-go-dev:matrix.org) channel for this implementation.
 
 ## Usage
-
-### Binaries
-
-[Latest Release](https://github.com/Sudo-Ivan/Reticulum-Go/releases/latest)
 
 ### Building
 
@@ -31,7 +27,9 @@ make build
 make run
 ```
 
-### Experimental greenteagc
+### Experimental Green Tea GC 
+
+New GC as of Go 1.25.
 
 See [greenteagc github issue](https://github.com/golang/go/issues/73581) for more info.
 
