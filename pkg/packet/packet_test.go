@@ -274,3 +274,58 @@ func TestPacketHashing(t *testing.T) {
 	hash5 := p3.GetHash()
 	_ = hash5 // Use hash5 to avoid unused variable error
 }
+
+// BenchmarkPacketOperations benchmarks packet creation, packing, and hashing
+func BenchmarkPacketOperations(b *testing.B) {
+	// Prepare test data (keep under MTU limit)
+	data := randomBytes(256)
+	transportID := randomBytes(16)
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		// Create packet
+		packet := NewPacket(0x00, data, PacketTypeData, ContextNone, 0x00, HeaderType1, transportID, false, 0x00)
+
+		// Pack the packet
+		if err := packet.Pack(); err != nil {
+			b.Fatalf("Packet.Pack() failed: %v", err)
+		}
+
+		// Get hash (triggers crypto operations)
+		_ = packet.GetHash()
+	}
+}
+
+// BenchmarkPacketSerializeDeserialize benchmarks the full pack/unpack cycle
+func BenchmarkPacketSerializeDeserialize(b *testing.B) {
+	// Prepare test data (keep under MTU limit)
+	data := randomBytes(256)
+	transportID := randomBytes(16)
+
+	// Create and pack original packet
+	originalPacket := NewPacket(0x00, data, PacketTypeData, ContextNone, 0x00, HeaderType1, transportID, false, 0x00)
+	if err := originalPacket.Pack(); err != nil {
+		b.Fatalf("Original packet.Pack() failed: %v", err)
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+
+	for i := 0; i < b.N; i++ {
+		// Create new packet from raw data
+		packet := &Packet{Raw: make([]byte, len(originalPacket.Raw))}
+		copy(packet.Raw, originalPacket.Raw)
+
+		// Unpack the packet
+		if err := packet.Unpack(); err != nil {
+			b.Fatalf("Packet.Unpack() failed: %v", err)
+		}
+
+		// Re-pack
+		if err := packet.Pack(); err != nil {
+			b.Fatalf("Packet.Pack() failed: %v", err)
+		}
+	}
+}
