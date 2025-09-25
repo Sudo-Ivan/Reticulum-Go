@@ -15,7 +15,7 @@ MAIN_PACKAGE=./cmd/reticulum-go
 
 ALL_PACKAGES=$$(go list ./... | grep -v /vendor/)
 
-.PHONY: all build build-experimental experimental release lint clean test coverage deps help
+.PHONY: all build build-experimental experimental release lint bench bench-experimental bench-compare clean test coverage deps help
 
 all: clean deps build test
 
@@ -35,6 +35,14 @@ release:
 
 lint:
 	revive -config revive.toml -formatter friendly ./pkg/* ./cmd/* ./internal/*
+
+bench:
+	$(GOTEST) -bench=. -benchmem ./...
+
+bench-experimental:
+	GOEXPERIMENT=greenteagc $(GOTEST) -bench=. -benchmem ./...
+
+bench-compare: bench bench-experimental
 
 clean:
 	@rm -rf $(BUILD_DIR)
@@ -108,6 +116,9 @@ help:
 	@echo "  experimental       - Alias for build-experimental"
 	@echo "  release            - Build stripped static binary for release"
 	@echo "  lint               - Run revive linter"
+	@echo "  bench              - Run benchmarks with standard GC"
+	@echo "  bench-experimental - Run benchmarks with experimental GC"
+	@echo "  bench-compare      - Run benchmarks with both GC settings"
 	@echo "  clean              - Remove build artifacts"
 	@echo "  test               - Run tests"
 	@echo "  coverage           - Generate test coverage report"
