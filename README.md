@@ -17,6 +17,12 @@ Feel free to join our seperate [matrix](https://matrix.to/#/#reticulum-go-dev:ma
 
 ## Usage
 
+### Binaries
+
+[Latest Release](https://github.com/Sudo-Ivan/Reticulum-Go/releases/latest)
+
+### Building
+
 Requires Go 1.25+
 
 ```
@@ -25,11 +31,12 @@ make build
 make run
 ```
 
-### Using Go
+### Experimental greenteagc
+
+See [greenteagc github issue](https://github.com/golang/go/issues/73581) for more info.
 
 ```bash
-go install github.com/Sudo-Ivan/reticulum-go/cmd/reticulum-go@latest
-
+make build-experimental
 ```
 
 ## Linter
