@@ -1,6 +1,8 @@
 ### Core Components (In Progress) 
 
-Last Updated: 2025-07-06
+*Needs verification with Reticulum 1.0.0.*
+
+Last Updated: 2025-09-25
 
 - [x] Basic Configuration System
   - [x] Basic config structure
@@ -25,7 +27,7 @@ Last Updated: 2025-07-06
 - [x] Cryptographic Primitives (Testing required)
   - [x] Ed25519
   - [x] Curve25519
-  - [x] AES-128-CBC
+  - [x] ~~AES-128-CBC~~ (Deprecated)
   - [x] AES-256-CBC
   - [x] SHA-256
   - [x] HKDF
@@ -131,7 +133,6 @@ Last Updated: 2025-07-06
 - [ ] RNS Utilities.
 - [ ] Reticulum config.
 
-
 ### Testing & Validation (Priority)
 - [ ] Unit tests for all components
   - [ ] Identity tests
@@ -152,8 +153,7 @@ Last Updated: 2025-07-06
   - [ ] Channel system end-to-end
   - [ ] Buffer system performance
 - [ ] Cross-client compatibility tests
-- [ ] Performance benchmarks
-- [ ] Security auditing (When Reticulum is 1.0 / stable)
+- [ ] Performance and memory benchmarks
 
 ### Documentation
 - [ ] API documentation
@@ -165,3 +165,8 @@ Last Updated: 2025-07-06
 - [ ] Remove default community interfaces in default config creation after testing
 - [ ] Optimize announce packet creation and caching
 - [ ] Improve debug logging system
+
+### Experimental Features
+- [x] Experimental Green Tea GC (build option) (Go 1.25+)
+- [ ] MicroVM (firecracker)
+- [ ] Kata Container Support
