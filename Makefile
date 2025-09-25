@@ -1,5 +1,7 @@
 GOCMD=go
 GOBUILD=$(GOCMD) build
+GOBUILD_EXPERIMENTAL=GOEXPERIMENT=greenteagc $(GOCMD) build
+GOBUILD_RELEASE=CGO_ENABLED=0 $(GOCMD) build -ldflags="-s -w"
 GOCLEAN=$(GOCMD) clean
 GOTEST=$(GOCMD) test
 GOGET=$(GOCMD) get
@@ -13,13 +15,26 @@ MAIN_PACKAGE=./cmd/reticulum-go
 
 ALL_PACKAGES=$$(go list ./... | grep -v /vendor/)
 
-.PHONY: all build clean test coverage deps help
+.PHONY: all build build-experimental experimental release lint clean test coverage deps help
 
 all: clean deps build test
 
-build: 
+build:
 	@mkdir -p $(BUILD_DIR)
 	$(GOBUILD) -o $(BUILD_DIR)/$(BINARY_NAME) $(MAIN_PACKAGE)
+
+build-experimental:
+	@mkdir -p $(BUILD_DIR)
+	$(GOBUILD_EXPERIMENTAL) -o $(BUILD_DIR)/$(BINARY_NAME)-experimental $(MAIN_PACKAGE)
+
+experimental: build-experimental
+
+release:
+	@mkdir -p $(BUILD_DIR)
+	$(GOBUILD_RELEASE) -o $(BUILD_DIR)/$(BINARY_NAME) $(MAIN_PACKAGE)
+
+lint:
+	revive -config revive.toml -formatter friendly ./pkg/* ./cmd/* ./internal/*
 
 clean:
 	@rm -rf $(BUILD_DIR)
@@ -87,12 +102,16 @@ install:
 
 help:
 	@echo "Available targets:"
-	@echo "  all          - Clean, download dependencies, build and test"
-	@echo "  build        - Build binary"
-	@echo "  clean        - Remove build artifacts"
-	@echo "  test         - Run tests"
-	@echo "  coverage     - Generate test coverage report"
-	@echo "  deps         - Download dependencies"
+	@echo "  all                - Clean, download dependencies, build and test"
+	@echo "  build              - Build binary"
+	@echo "  build-experimental - Build binary with experimental features (GOEXPERIMENT=greenteagc)"
+	@echo "  experimental       - Alias for build-experimental"
+	@echo "  release            - Build stripped static binary for release"
+	@echo "  lint               - Run revive linter"
+	@echo "  clean              - Remove build artifacts"
+	@echo "  test               - Run tests"
+	@echo "  coverage           - Generate test coverage report"
+	@echo "  deps               - Download dependencies"
 	@echo "  build-linux  - Build for Linux (amd64, arm64, arm)"
 	@echo "  build-windows- Build for Windows (amd64, arm64)"
 	@echo "  build-darwin - Build for MacOS (amd64, arm64)"
