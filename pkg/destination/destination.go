@@ -6,7 +6,6 @@ import (
 	"log"
 	"sync"
 
-	"github.com/Sudo-Ivan/reticulum-go/pkg/announce"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/common"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/identity"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/transport"
@@ -150,44 +149,14 @@ func (d *Destination) Announce(appData []byte) error {
 		appData = d.defaultAppData
 	}
 
-	// Create a new Announce instance
-	announce, err := announce.New(d.identity, appData, false, d.transport.GetConfig())
-	if err != nil {
-		return fmt.Errorf("failed to create announce: %w", err)
-	}
-
-	// Get the packet from the announce instance
-	packet := announce.GetPacket()
+	// Create announce packet using transport method
+	packet := transport.CreateAnnouncePacket(d.GetHash(), d.identity, appData, 0, d.transport.GetConfig())
 	if packet == nil {
 		return errors.New("failed to create announce packet")
 	}
 
-	// Send announce packet to all interfaces
-	log.Printf("[DEBUG-4] Sending announce packet to all interfaces")
-	if d.transport == nil {
-		return errors.New("transport not initialized")
-	}
-
-	interfaces := d.transport.GetInterfaces()
-	log.Printf("[DEBUG-7] Got %d interfaces from transport", len(interfaces))
-	
-	var lastErr error
-	for name, iface := range interfaces {
-		log.Printf("[DEBUG-7] Checking interface %s: enabled=%v, online=%v", name, iface.IsEnabled(), iface.IsOnline())
-		if iface.IsEnabled() && iface.IsOnline() {
-			log.Printf("[DEBUG-7] Sending announce to interface %s (%d bytes)", name, len(packet))
-			if err := iface.Send(packet, ""); err != nil {
-				log.Printf("[ERROR] Failed to send announce on interface %s: %v", name, err)
-				lastErr = err
-			} else {
-				log.Printf("[DEBUG-7] Successfully sent announce to interface %s", name)
-			}
-		} else {
-			log.Printf("[DEBUG-7] Skipping interface %s (not enabled or not online)", name)
-		}
-	}
-
-	return lastErr
+	// Send announce packet using transport
+	return transport.SendAnnounce(packet)
 }
 
 func (d *Destination) AcceptsLinks(accepts bool) {
