@@ -143,53 +143,24 @@ func (tc *TCPClientInterface) readLoop() {
 		for i := 0; i < n; i++ {
 			b := buffer[i]
 
-			if tc.kissFraming {
-				// KISS framing logic
-				if b == KISS_FEND {
-					if inFrame && len(dataBuffer) > 0 {
-						tc.handlePacket(dataBuffer)
-						dataBuffer = dataBuffer[:0]
-					}
-					inFrame = !inFrame
-					continue
+			if b == HDLC_FLAG {
+				if inFrame && len(dataBuffer) > 0 {
+					tc.handlePacket(dataBuffer)
+					dataBuffer = dataBuffer[:0]
 				}
+				inFrame = !inFrame
+				continue
+			}
 
-				if inFrame {
-					if b == KISS_FESC {
-						escape = true
-					} else {
-						if escape {
-							if b == KISS_TFEND {
-								b = KISS_FEND
-							} else if b == KISS_TFESC {
-								b = KISS_FESC
-							}
-							escape = false
-						}
-						dataBuffer = append(dataBuffer, b)
+			if inFrame {
+				if b == HDLC_ESC {
+					escape = true
+				} else {
+					if escape {
+						b ^= HDLC_ESC_MASK
+						escape = false
 					}
-				}
-			} else {
-				// HDLC framing logic
-				if b == HDLC_FLAG {
-					if inFrame && len(dataBuffer) > 0 {
-						tc.handlePacket(dataBuffer)
-						dataBuffer = dataBuffer[:0]
-					}
-					inFrame = !inFrame
-					continue
-				}
-
-				if inFrame {
-					if b == HDLC_ESC {
-						escape = true
-					} else {
-						if escape {
-							b ^= HDLC_ESC_MASK
-							escape = false
-						}
-						dataBuffer = append(dataBuffer, b)
-					}
+					dataBuffer = append(dataBuffer, b)
 				}
 			}
 		}
@@ -203,38 +174,19 @@ func (tc *TCPClientInterface) handlePacket(data []byte) {
 	}
 
 	tc.mutex.Lock()
-	tc.packetType = data[0]
 	tc.RxBytes += uint64(len(data))
 	lastRx := time.Now()
 	tc.lastRx = lastRx
 	tc.mutex.Unlock()
 
-	log.Printf("[DEBUG-7] Received packet: type=0x%02x, size=%d bytes", tc.packetType, len(data))
+	log.Printf("[DEBUG-7] Received packet: type=0x%02x, size=%d bytes", data[0], len(data))
 
-	payload := data[1:]
-
-	switch tc.packetType {
-	case 0x01: // Announce packet
-		log.Printf("[DEBUG-7] Processing announce packet: payload=%d bytes", len(payload))
-		if len(payload) >= 53 {
-			tc.BaseInterface.ProcessIncoming(payload)
-		} else {
-			log.Printf("[DEBUG-7] Announce packet too small: %d bytes", len(payload))
-		}
-	case 0x02: // Link packet
-		log.Printf("[DEBUG-7] Processing link packet: payload=%d bytes", len(payload))
-		if len(payload) < 40 {
-			log.Printf("[DEBUG-7] Link packet too small: %d bytes", len(payload))
-			return
-		}
-		tc.BaseInterface.ProcessIncoming(payload)
-	case 0x03: // Announce packet
-		tc.BaseInterface.ProcessIncoming(payload)
-	case 0x04: // Transport packet
-		tc.BaseInterface.ProcessIncoming(payload)
-	default:
-		// Unknown packet type
-		return
+	// For RNS packets, call the packet callback directly
+	if callback := tc.GetPacketCallback(); callback != nil {
+		log.Printf("[DEBUG-7] Calling packet callback for RNS packet")
+		callback(data, tc)
+	} else {
+		log.Printf("[DEBUG-7] No packet callback set for TCP interface")
 	}
 }
 
@@ -263,18 +215,14 @@ func (tc *TCPClientInterface) ProcessOutgoing(data []byte) error {
 	tc.writing = true
 	defer func() { tc.writing = false }()
 
+	// For TCP connections, use HDLC framing like the server expects
 	var frame []byte
-	if tc.kissFraming {
-		frame = append([]byte{KISS_FEND}, escapeKISS(data)...)
-		frame = append(frame, KISS_FEND)
-	} else {
-		frame = append([]byte{HDLC_FLAG}, escapeHDLC(data)...)
-		frame = append(frame, HDLC_FLAG)
-	}
+	frame = append([]byte{HDLC_FLAG}, escapeHDLC(data)...)
+	frame = append(frame, HDLC_FLAG)
 
 	// Update TX stats before sending
 	tc.UpdateStats(uint64(len(frame)), false)
-	
+
 	log.Printf("[DEBUG-7] TCP interface %s: Writing %d bytes to network", tc.Name, len(frame))
 	_, err := tc.conn.Write(frame)
 	if err != nil {
