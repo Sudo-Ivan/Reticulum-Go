@@ -307,9 +307,14 @@ func (i *Identity) Decrypt(ciphertextToken []byte, ratchets [][]byte, enforceRat
 		return nil, errors.New("decryption failed because the token size was invalid")
 	}
 
-	// Extract peer public key and ciphertext
-	peerPubBytes := ciphertextToken[:KEYSIZE/8/2]
-	ciphertext := ciphertextToken[KEYSIZE/8/2:]
+	// Extract components: ephemeralPubKey(32) + ciphertext + mac(32)
+	if len(ciphertextToken) < 32+32+32 { // minimum sizes
+		return nil, errors.New("token too short")
+	}
+
+	peerPubBytes := ciphertextToken[:32]
+	ciphertext := ciphertextToken[32 : len(ciphertextToken)-32]
+	mac := ciphertextToken[len(ciphertextToken)-32:]
 
 	// Try decryption with ratchets first if provided
 	if len(ratchets) > 0 {
@@ -341,6 +346,11 @@ func (i *Identity) Decrypt(ciphertextToken []byte, ratchets [][]byte, enforceRat
 	derivedKey := make([]byte, 32)
 	if _, err := io.ReadFull(hkdfReader, derivedKey); err != nil {
 		return nil, fmt.Errorf("failed to derive key: %v", err)
+	}
+
+	// Validate HMAC
+	if !cryptography.ValidateHMAC(derivedKey, append(peerPubBytes, ciphertext...), mac) {
+		return nil, errors.New("invalid HMAC")
 	}
 
 	// Create AES cipher
