@@ -267,14 +267,20 @@ func main() {
 	}
 	debugLog(2, "Configuration loaded from: %s", cfg.ConfigPath)
 
-	// Add default TCP interfaces if none configured
 	if len(cfg.Interfaces) == 0 {
-		debugLog(2, "No interfaces configured, adding default TCP interfaces")
+		debugLog(2, "No interfaces configured, adding default interfaces")
 		cfg.Interfaces = make(map[string]*common.InterfaceConfig)
+
+		// Auto interface for local discovery
+		cfg.Interfaces["Auto Discovery"] = &common.InterfaceConfig{
+			Type:    "AutoInterface",
+			Enabled: true,
+			Name:    "Auto Discovery",
+		}
 
 		cfg.Interfaces["Go-RNS-Testnet"] = &common.InterfaceConfig{
 			Type:       "TCPClientInterface",
-			Enabled:    true,
+			Enabled:    false,
 			TargetHost: "127.0.0.1",
 			TargetPort: 4242,
 			Name:       "Go-RNS-Testnet",
@@ -435,8 +441,7 @@ func (r *Reticulum) Start() error {
 				debugLog(1, "Could not send announce: %v", err)
 			}
 
-			// Announce every 5 minutes
-			time.Sleep(5 * time.Minute)
+			time.Sleep(60 * time.Second)
 		}
 	}()
 
