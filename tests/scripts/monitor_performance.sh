@@ -31,7 +31,8 @@ while [ $SECONDS -lt $END_TIME ] && kill -0 $PID 2>/dev/null; do
             SAMPLES=$((SAMPLES + 1))
             TOTAL_RSS=$((TOTAL_RSS + RSS))
             TOTAL_VSZ=$((TOTAL_VSZ + VSZ))
-            TOTAL_CPU=$((TOTAL_CPU + CPU))
+            CPU_INT=$(echo $CPU | cut -d. -f1)
+            TOTAL_CPU=$((TOTAL_CPU + CPU_INT))
 
             if [ $RSS -gt $MAX_RSS ]; then
                 MAX_RSS=$RSS
