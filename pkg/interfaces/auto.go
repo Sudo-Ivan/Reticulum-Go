@@ -97,6 +97,10 @@ func (ai *AutoInterface) Start() error {
 		return fmt.Errorf("no suitable interfaces found")
 	}
 
+	// Mark interface as online
+	ai.Online = true
+	ai.Enabled = true
+
 	go ai.peerJobs()
 	return nil
 }
