@@ -107,7 +107,7 @@ func NewReticulum(cfg *common.ReticulumConfig) (*Reticulum, error) {
 		identity,
 		destination.IN,
 		destination.SINGLE,
-		"Go-Client",
+		"nomadnetwork",
 		t,
 		"node",
 	)
@@ -188,8 +188,11 @@ func NewReticulum(cfg *common.ReticulumConfig) (*Reticulum, error) {
 
 		// Set packet callback
 		iface.SetPacketCallback(func(data []byte, ni common.NetworkInterface) {
+			debugLog(3, "Packet callback called for interface %s, data len: %d", ni.GetName(), len(data))
 			if r.transport != nil {
 				r.transport.HandlePacket(data, ni)
+			} else {
+				debugLog(1, "Transport is nil in packet callback")
 			}
 		})
 
@@ -415,7 +418,8 @@ func (r *Reticulum) Start() error {
 
 	// Send initial announce
 	debugLog(2, "Sending initial announce")
-	if err := r.destination.Announce(r.createNodeAppData()); err != nil {
+	nodeName := "Go-Client"
+	if err := r.destination.Announce([]byte(nodeName)); err != nil {
 		debugLog(1, "Failed to send initial announce: %v", err)
 	}
 
@@ -426,7 +430,7 @@ func (r *Reticulum) Start() error {
 
 		for {
 			debugLog(3, "Announcing destination...")
-			err := r.destination.Announce(r.createNodeAppData())
+			err := r.destination.Announce([]byte(nodeName))
 			if err != nil {
 				debugLog(1, "Could not send announce: %v", err)
 			}
@@ -490,84 +494,40 @@ func (h *AnnounceHandler) AspectFilter() []string {
 func (h *AnnounceHandler) ReceivedAnnounce(destHash []byte, id interface{}, appData []byte) error {
 	debugLog(DEBUG_INFO, "Received announce from %x", destHash)
 	debugLog(DEBUG_PACKETS, "Raw announce data: %x", appData)
+	log.Printf("[DEBUG-3] MAIN HANDLER: Received announce from %x, appData len: %d", destHash, len(appData))
 
 	var isNode bool
 	var nodeEnabled bool
 	var nodeTimestamp int64
 	var nodeMaxSize int16
 
-	// Parse msgpack array
+	// Parse msgpack appData from transport announce format
 	if len(appData) > 0 {
-		if appData[0] == 0x92 {
-			// Format [name, ticket] for standard peers
-			debugLog(DEBUG_VERBOSE, "Received standard peer announce")
-			isNode = false
-			var pos = 1
-
-			// Parse first element (NameBytes)
-			if pos+1 < len(appData) && appData[pos] == 0xc4 {
+		// appData is msgpack array [name, customData]
+		if appData[0] == 0x92 { // array of 2 elements
+			// Skip array header and first element (name)
+			pos := 1
+			if pos < len(appData) && appData[pos] == 0xc4 { // bin 8
 				nameLen := int(appData[pos+1])
-				if pos+2+nameLen <= len(appData) {
-					nameBytes := appData[pos+2 : pos+2+nameLen]
-					name := string(nameBytes)
-					pos += 2 + nameLen
-					debugLog(DEBUG_VERBOSE, "Peer name: %s (bytes: %x)", name, nameBytes)
-
-					// Parse second element (TicketValue)
-					if pos < len(appData) {
-						ticketValue := appData[pos] // Assuming fixint for now
-						debugLog(DEBUG_VERBOSE, "Peer ticket value: %d", ticketValue)
-					} else {
-						debugLog(DEBUG_ERROR, "Could not parse ticket value from announce appData")
+				pos += 2 + nameLen
+				if pos < len(appData) && appData[pos] == 0xc4 { // bin 8
+					dataLen := int(appData[pos+1])
+					if pos+2+dataLen <= len(appData) {
+						customData := appData[pos+2 : pos+2+dataLen]
+						nodeName := string(customData)
+						log.Printf("[DEBUG-3] Parsed node name: %s", nodeName)
+						debugLog(DEBUG_INFO, "Announced node: %s", nodeName)
 					}
-				} else {
-					debugLog(DEBUG_ERROR, "Could not parse name bytes from announce appData")
-				}
-			} else {
-				debugLog(DEBUG_ERROR, "Announce appData name is not in expected bin 8 format")
-			}
-		} else if appData[0] == 0x93 {
-			// Format [enable, timestamp, maxsize] for nodes
-			debugLog(DEBUG_VERBOSE, "Received node announce")
-			isNode = true
-			var pos = 1
-
-			// Parse first element (Boolean enable/disable)
-			if pos < len(appData) {
-				if appData[pos] == 0xc3 {
-					nodeEnabled = true
-				} else if appData[pos] == 0xc2 {
-					nodeEnabled = false
-				} else {
-					debugLog(DEBUG_ERROR, "Unexpected format for node enabled status: %x", appData[pos])
-				}
-				pos++
-				debugLog(DEBUG_VERBOSE, "Node enabled: %v", nodeEnabled)
-
-				// Parse second element (Int32 timestamp)
-				if pos+4 < len(appData) && appData[pos] == 0xd2 {
-					pos++
-					timestamp := binary.BigEndian.Uint32(appData[pos : pos+4])
-					nodeTimestamp = int64(timestamp)
-					pos += 4
-					debugLog(DEBUG_VERBOSE, "Node timestamp: %d (%s)", timestamp, time.Unix(nodeTimestamp, 0))
-
-					// Parse third element (Int16 max transfer size)
-					if pos+2 < len(appData) && appData[pos] == 0xd1 {
-						pos++
-						maxSize := binary.BigEndian.Uint16(appData[pos : pos+2])
-						nodeMaxSize = int16(maxSize) // #nosec G115
-						debugLog(DEBUG_VERBOSE, "Node max transfer size: %d KB", nodeMaxSize)
-					} else {
-						debugLog(DEBUG_ERROR, "Could not parse max transfer size from node announce")
-					}
-				} else {
-					debugLog(DEBUG_ERROR, "Could not parse timestamp from node announce")
 				}
 			}
 		} else {
-			debugLog(DEBUG_VERBOSE, "Unknown announce data format: %x", appData)
+			// Fallback: treat as raw node name
+			nodeName := string(appData)
+			log.Printf("[DEBUG-3] Raw node name: %s", nodeName)
+			debugLog(DEBUG_INFO, "Announced node: %s", nodeName)
 		}
+	} else {
+		log.Printf("[DEBUG-3] No appData (empty announce)")
 	}
 
 	// Type assert and log identity details
