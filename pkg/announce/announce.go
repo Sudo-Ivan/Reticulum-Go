@@ -225,9 +225,9 @@ func (a *Announce) HandleAnnounce(data []byte) error {
 	}
 
 	// Now parse the data portion according to the spec
-	// Public Key (32) + Signing Key (32) + Name Hash (10) + Random Hash (10) + [Ratchet] + Signature (64) + App Data
+	// Public Key (32) + Signing Key (32) + Name Hash (10) + Random Hash (10) + Ratchet (32) + Signature (64) + App Data
 
-	if len(packetData) < 148 { // 32 + 32 + 10 + 10 + 64
+	if len(packetData) < 180 { // 32 + 32 + 10 + 10 + 32 + 64
 		return errors.New("announce data too short")
 	}
 
@@ -236,16 +236,13 @@ func (a *Announce) HandleAnnounce(data []byte) error {
 	signKey := packetData[32:64]
 	nameHash := packetData[64:74]
 	randomHash := packetData[74:84]
-
-	// The next field could be a ratchet (32 bytes) or signature (64 bytes)
-	// We need to detect this somehow or use a flag
-	// For now, assume no ratchet
-
-	signature := packetData[84:148]
-	appData := packetData[148:]
+	ratchetData := packetData[84:116]
+	signature := packetData[116:180]
+	appData := packetData[180:]
 
 	log.Printf("[DEBUG-7] Announce fields: encKey=%x, signKey=%x", encKey, signKey)
 	log.Printf("[DEBUG-7] Name hash=%x, random hash=%x", nameHash, randomHash)
+	log.Printf("[DEBUG-7] Ratchet=%x", ratchetData[:8])
 	log.Printf("[DEBUG-7] Signature=%x, appDataLen=%d", signature[:8], len(appData))
 
 	// Get the destination hash from header
@@ -272,6 +269,7 @@ func (a *Announce) HandleAnnounce(data []byte) error {
 	signedData = append(signedData, signKey...)
 	signedData = append(signedData, nameHash...)
 	signedData = append(signedData, randomHash...)
+	signedData = append(signedData, ratchetData...)
 	signedData = append(signedData, appData...)
 
 	if !announcedIdentity.Verify(signedData, signature) {
