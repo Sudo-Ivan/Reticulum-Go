@@ -18,7 +18,7 @@ TOTAL_RSS=0
 TOTAL_VSZ=0
 TOTAL_CPU=0
 
-END_TIME=$((SECONDS + 40))
+END_TIME=$((SECONDS + 120))
 
 while [ $SECONDS -lt $END_TIME ] && kill -0 $PID 2>/dev/null; do
     # Get memory and CPU info using ps
@@ -84,7 +84,7 @@ AVG_VSZ_GB=$((AVG_VSZ_MB / 1024))
 
 # Output results
 echo "=== Performance Usage Report ==="
-echo "Monitoring duration: 40 seconds"
+echo "Monitoring duration: 120 seconds"
 echo "Samples collected: $SAMPLES"
 echo ""
 
