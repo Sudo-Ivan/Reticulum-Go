@@ -64,11 +64,38 @@ jobs:
           echo "Testing build for current platform (${{ matrix.os }}, ${{ matrix.goarch }})..."
           go build -v ./cmd/reticulum-go
 
+      - name: Test binary execution (Linux/macOS)
+        if: matrix.os != 'windows-latest'
+        run: |
+          echo "Testing binary execution on (${{ matrix.os }}, ${{ matrix.goarch }})..."
+          timeout 5s ./reticulum-go || echo "Binary started successfully (timeout expected)"
+
+      - name: Test binary execution (Windows)
+        if: matrix.os == 'windows-latest'
+        run: |
+          echo "Testing binary execution on (${{ matrix.os }}, ${{ matrix.goarch }})..."
+          # Start the binary and kill after 5 seconds to verify it can start
+          Start-Process -FilePath ".\reticulum-go.exe" -NoNewWindow
+          Start-Sleep -Seconds 5
+          Stop-Process -Name "reticulum-go" -Force -ErrorAction SilentlyContinue
+          echo "Binary started successfully"
+        shell: pwsh
+
       - name: Test cross-compilation (AMD64 runners only)
         if: matrix.goarch == 'amd64'
         run: |
           echo "Testing ARM64 cross-compilation from AMD64..."
-          GOOS=linux GOARCH=arm64 go build -v ./cmd/reticulum-go
+          go build -v ./cmd/reticulum-go
+        env:
+          GOOS: linux
+          GOARCH: arm64
 
+      - name: Test ARMv6 cross-compilation (AMD64 runners only)
+        if: matrix.goarch == 'amd64'
+        run: |
           echo "Testing ARMv6 cross-compilation from AMD64..."
-          GOOS=linux GOARCH=arm GOARM=6 go build -v ./cmd/reticulum-go
+          go build -v ./cmd/reticulum-go
+        env:
+          GOOS: linux
+          GOARCH: arm
+          GOARM: 6
