@@ -215,7 +215,7 @@ func (tc *TCPClientInterface) ProcessOutgoing(data []byte) error {
 	tc.writing = true
 	defer func() { tc.writing = false }()
 
-	// For TCP connections, use HDLC framing like the server expects
+	// For TCP connections, use HDLC framing
 	var frame []byte
 	frame = append([]byte{HDLC_FLAG}, escapeHDLC(data)...)
 	frame = append(frame, HDLC_FLAG)
