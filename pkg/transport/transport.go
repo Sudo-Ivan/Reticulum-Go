@@ -743,8 +743,9 @@ func (t *Transport) handleAnnouncePacket(data []byte, iface common.NetworkInterf
 
 	// Verify signature
 	signData := append(addresses[:16], appDataMsg...) // destHash + appDataMsg
+	log.Printf("[DEBUG-3] Verifying signature with data len: %d, destHash: %x, appDataMsg len: %d", len(signData), addresses[:16], len(appDataMsg))
 	if !id.Verify(signData, signature) {
-		log.Printf("[DEBUG-3] Signature verification failed")
+		log.Printf("[DEBUG-3] Signature verification failed - signData: %x", signData[:32])
 		return fmt.Errorf("invalid announce signature")
 	}
 	log.Printf("[DEBUG-3] Signature verified successfully")
@@ -1091,9 +1092,9 @@ func (l *Link) GetStatus() int {
 	return l.status
 }
 
-func CreateAnnouncePacket(destHash []byte, identity *identity.Identity, appData []byte, hops byte, config *common.ReticulumConfig) []byte {
-	log.Printf("[DEBUG-7] Creating announce packet")
-	log.Printf("[DEBUG-7] Input parameters: destHash=%x, appData=%x, hops=%d", destHash, appData, hops)
+func CreateAnnouncePacket(destHash []byte, identity *identity.Identity, appData []byte, destName string, hops byte, config *common.ReticulumConfig) []byte {
+	log.Printf("[DEBUG-3] Creating announce packet for %s", destName)
+	log.Printf("[DEBUG-3] Input: destHash=%x, appData=%s, hops=%d", destHash[:8], string(appData), hops)
 
 	// Create header (2 bytes)
 	headerByte := byte(
@@ -1134,9 +1135,8 @@ func CreateAnnouncePacket(destHash []byte, identity *identity.Identity, appData 
 	log.Printf("[DEBUG-7] Packet size after adding signing key: %d bytes", len(packet))
 
 	// Add name hash (10 bytes)
-	nameString := fmt.Sprintf("%s.%s", config.AppName, config.AppAspect)
-	nameHash := sha256.Sum256([]byte(nameString))
-	log.Printf("[DEBUG-7] Adding name hash (10 bytes): %x", nameHash[:10])
+	nameHash := sha256.Sum256([]byte(destName))
+	log.Printf("[DEBUG-7] Adding name hash (10 bytes) for %s: %x", destName, nameHash[:10])
 	packet = append(packet, nameHash[:10]...)
 	log.Printf("[DEBUG-7] Packet size after adding name hash: %d bytes", len(packet))
 
@@ -1155,7 +1155,7 @@ func CreateAnnouncePacket(destHash []byte, identity *identity.Identity, appData 
 	log.Printf("[DEBUG-7] Packet size after adding random hash: %d bytes", len(packet))
 
 	// Create msgpack array for app data
-	nameBytes := []byte(nameString)
+	nameBytes := []byte(destName)
 	appDataMsg := []byte{0x92} // array of 2 elements
 
 	// Add name as first element
@@ -1177,8 +1177,8 @@ func CreateAnnouncePacket(destHash []byte, identity *identity.Identity, appData 
 
 	// Finally add the app data message
 	packet = append(packet, appDataMsg...)
-	log.Printf("[DEBUG-7] Final packet size: %d bytes", len(packet))
-	log.Printf("[DEBUG-7] Complete packet: %x", packet)
+	log.Printf("[DEBUG-3] Final packet size: %d bytes", len(packet))
+	log.Printf("[DEBUG-3] appDataMsg: %x (len=%d)", appDataMsg, len(appDataMsg))
 
 	return packet
 }
