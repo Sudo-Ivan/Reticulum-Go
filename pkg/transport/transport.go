@@ -633,7 +633,7 @@ func (t *Transport) HandlePacket(data []byte, iface common.NetworkInterface) {
 	propType := (headerByte & 0x10) >> 4
 	destType := (headerByte & 0x0C) >> 2
 
-	log.Printf("[DEBUG-4] Packet received - Type: 0x%02x, Header: %d, Context: %d, PropType: %d, DestType: %d, Size: %d bytes",
+	log.Printf("[DEBUG-3] TRANSPORT: Packet received - Type: 0x%02x, Header: %d, Context: %d, PropType: %d, DestType: %d, Size: %d bytes",
 		packetType, headerType, contextFlag, propType, destType, len(data))
 	log.Printf("[DEBUG-5] Interface: %s, Raw header: 0x%02x", iface.GetName(), headerByte)
 
@@ -663,6 +663,7 @@ func (t *Transport) HandlePacket(data []byte, iface common.NetworkInterface) {
 }
 
 func (t *Transport) handleAnnouncePacket(data []byte, iface common.NetworkInterface) error {
+	log.Printf("[DEBUG-3] Processing announce packet, length: %d bytes", len(data))
 	if len(data) < 2 {
 		return fmt.Errorf("packet too small for header")
 	}
@@ -705,41 +706,87 @@ func (t *Transport) handleAnnouncePacket(data []byte, iface common.NetworkInterf
 	context := data[startIdx+addrSize]
 	payload := data[startIdx+addrSize+1:]
 
-	log.Printf("[DEBUG-6] Addresses: %x", addresses)
-	log.Printf("[DEBUG-7] Context: %02x, Payload length: %d", context, len(payload))
+	log.Printf("[DEBUG-3] Addresses: %x (len=%d)", addresses, len(addresses))
+	log.Printf("[DEBUG-3] Context: %02x, Payload length: %d", context, len(payload))
+	log.Printf("[DEBUG-3] Packet total length: %d", len(data))
 
-	// Process payload (should contain pubkey + app data)
-	if len(payload) < 32 { // Minimum size for pubkey
+	// Process payload (transport announce format)
+	minPayloadSize := 32 + 32 + 10 + 10 + 64 // encKey + signKey + nameHash + randomHash + signature
+	log.Printf("[DEBUG-3] Checking payload size: %d bytes, minimum: %d", len(payload), minPayloadSize)
+	if len(payload) < minPayloadSize {
+		log.Printf("[DEBUG-3] Payload too small for transport announce: %d bytes", len(payload))
 		return fmt.Errorf("payload too small for announce")
 	}
 
-	pubKey := payload[:32]
-	appData := payload[32:]
+	// Extract components
+	encKey := payload[:32]
+	signKey := payload[32:64]
+	nameHash := payload[64:74]
+	randomHash := payload[74:84]
+	signature := payload[84:148]
+	appDataMsg := payload[148:]
+
+	log.Printf("[DEBUG-3] Extracted: encKey=%x, signKey=%x, nameHash=%x, randomHash=%x, signature=%x, appDataMsg len=%d",
+		encKey[:8], signKey[:8], nameHash, randomHash, signature[:8], len(appDataMsg))
+
+	// Combine keys for public key
+	pubKey := append(encKey, signKey...)
 
 	// Create identity from public key
+	log.Printf("[DEBUG-3] Creating identity from pubKey: %x", pubKey[:16])
 	id := identity.FromPublicKey(pubKey)
 	if id == nil {
+		log.Printf("[DEBUG-3] Failed to create identity from public key")
 		return fmt.Errorf("invalid identity")
 	}
+	log.Printf("[DEBUG-3] Successfully created identity")
+
+	// Verify signature
+	signData := append(addresses[:16], appDataMsg...) // destHash + appDataMsg
+	if !id.Verify(signData, signature) {
+		log.Printf("[DEBUG-3] Signature verification failed")
+		return fmt.Errorf("invalid announce signature")
+	}
+	log.Printf("[DEBUG-3] Signature verified successfully")
+
+	// Parse appDataMsg (msgpack array)
+	appData := appDataMsg // For now, pass the raw msgpack data
 
 	// Generate announce hash to check for duplicates
 	announceHash := sha256.Sum256(data)
 	hashStr := string(announceHash[:])
 
+	log.Printf("[DEBUG-3] Announce hash: %x", announceHash[:8])
+
 	t.mutex.Lock()
 	if _, seen := t.seenAnnounces[hashStr]; seen {
 		t.mutex.Unlock()
-		log.Printf("[DEBUG-7] Ignoring duplicate announce %x", announceHash[:8])
+		log.Printf("[DEBUG-3] Ignoring duplicate announce %x", announceHash[:8])
 		return nil
 	}
 	t.seenAnnounces[hashStr] = true
 	t.mutex.Unlock()
 
+	log.Printf("[DEBUG-3] Processing new announce")
+
+	// Notify handlers first, regardless of forwarding limits
+	log.Printf("[DEBUG-3] Notifying announce handlers: destHash=%x, appDataLen=%d", addresses[:16], len(appData))
+	t.notifyAnnounceHandlers(addresses[:16], id, appData)
+	log.Printf("[DEBUG-3] Announce handlers notified")
+
 	// Don't forward if max hops reached
 	if hopCount >= MAX_HOPS {
-		log.Printf("[DEBUG-7] Announce exceeded max hops: %d", hopCount)
+		log.Printf("[DEBUG-3] Announce exceeded max hops: %d", hopCount)
 		return nil
 	}
+	log.Printf("[DEBUG-3] Hop count OK: %d", hopCount)
+
+	// Check bandwidth allocation for announces
+	if !t.announceRate.Allow() {
+		log.Printf("[DEBUG-3] Announce rate limit exceeded, not forwarding...")
+		return nil
+	}
+	log.Printf("[DEBUG-3] Bandwidth check passed")
 
 	// Add random delay before retransmission (0-2 seconds)
 	var delay time.Duration
@@ -752,12 +799,6 @@ func (t *Transport) handleAnnouncePacket(data []byte, iface common.NetworkInterf
 		delay = time.Duration(binary.BigEndian.Uint64(b)%2000) * time.Millisecond // #nosec G115
 	}
 	time.Sleep(delay)
-
-	// Check bandwidth allocation for announces
-	if !t.announceRate.Allow() {
-		log.Printf("[DEBUG-7] Announce rate limit exceeded, queuing...")
-		return nil
-	}
 
 	// Increment hop count
 	data[1]++
@@ -775,9 +816,6 @@ func (t *Transport) handleAnnouncePacket(data []byte, iface common.NetworkInterf
 			lastErr = err
 		}
 	}
-
-	// Notify handlers with first address as destination hash
-	t.notifyAnnounceHandlers(addresses[:16], id, appData)
 
 	return lastErr
 }
