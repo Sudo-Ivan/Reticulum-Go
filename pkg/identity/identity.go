@@ -44,7 +44,7 @@ const (
 type Identity struct {
 	privateKey      []byte
 	publicKey       []byte
-	signingKey      ed25519.PrivateKey
+	signingSeed     []byte // 32-byte Ed25519 seed (compatible with Python RNS)
 	verificationKey ed25519.PublicKey
 	hash            []byte
 	hexHash         string
@@ -76,13 +76,18 @@ func New() (*Identity, error) {
 	i.privateKey = privKey
 	i.publicKey = pubKey
 
-	// Generate Ed25519 signing keypair
-	verificationKey, signingKey, err := cryptography.GenerateSigningKeyPair()
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate Ed25519 keypair: %v", err)
+	// Generate 32-byte Ed25519 seed (compatible with Python RNS)
+	var ed25519Seed [32]byte
+	if _, err := io.ReadFull(rand.Reader, ed25519Seed[:]); err != nil {
+		return nil, fmt.Errorf("failed to generate Ed25519 seed: %v", err)
 	}
-	i.signingKey = signingKey
-	i.verificationKey = verificationKey
+
+	// Derive Ed25519 keypair from seed
+	privKeyEd := ed25519.NewKeyFromSeed(ed25519Seed[:])
+	pubKeyEd := privKeyEd.Public().(ed25519.PublicKey)
+
+	i.signingSeed = ed25519Seed[:]
+	i.verificationKey = pubKeyEd
 
 	return i, nil
 }
@@ -96,11 +101,13 @@ func (i *Identity) GetPublicKey() []byte {
 }
 
 func (i *Identity) GetPrivateKey() []byte {
-	return append(i.privateKey, i.signingKey...)
+	return append(i.privateKey, i.signingSeed...)
 }
 
 func (i *Identity) Sign(data []byte) []byte {
-	return cryptography.Sign(i.signingKey, data)
+	// Derive Ed25519 private key from seed (compatible with Python RNS)
+	privKey := ed25519.NewKeyFromSeed(i.signingSeed)
+	return cryptography.Sign(privKey, data)
 }
 
 func (i *Identity) Verify(data []byte, signature []byte) bool {
@@ -465,7 +472,7 @@ func (i *Identity) ToFile(path string) error {
 	data := map[string]interface{}{
 		"private_key":      i.privateKey,
 		"public_key":       i.publicKey,
-		"signing_key":      i.signingKey,
+		"signing_seed":     i.signingSeed,
 		"verification_key": i.verificationKey,
 		"app_data":         i.appData,
 	}
@@ -525,11 +532,25 @@ func RecallIdentity(path string) (*Identity, error) {
 		return nil, err
 	}
 
+	var signingSeed []byte
+	var verificationKey ed25519.PublicKey
+
+	if seedData, exists := data["signing_seed"]; exists {
+		signingSeed = seedData.([]byte)
+		verificationKey = data["verification_key"].(ed25519.PublicKey)
+	} else if keyData, exists := data["signing_key"]; exists {
+		oldKey := keyData.(ed25519.PrivateKey)
+		signingSeed = oldKey[:32]
+		verificationKey = data["verification_key"].(ed25519.PublicKey)
+	} else {
+		return nil, fmt.Errorf("no signing key data found in identity file")
+	}
+
 	id := &Identity{
 		privateKey:      data["private_key"].([]byte),
 		publicKey:       data["public_key"].([]byte),
-		signingKey:      data["signing_key"].(ed25519.PrivateKey),
-		verificationKey: data["verification_key"].(ed25519.PublicKey),
+		signingSeed:     signingSeed,
+		verificationKey: verificationKey,
 		appData:         data["app_data"].([]byte),
 		ratchets:        make(map[string][]byte),
 		ratchetExpiry:   make(map[string]int64),
@@ -638,11 +659,15 @@ func (i *Identity) SetRatchetKey(id string, key []byte) {
 
 // NewIdentity creates a new Identity instance with fresh keys
 func NewIdentity() (*Identity, error) {
-	// Generate Ed25519 signing keypair
-	pubKey, privKey, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate Ed25519 keypair: %v", err)
+	// Generate 32-byte Ed25519 seed (compatible with Python RNS)
+	var ed25519Seed [32]byte
+	if _, err := io.ReadFull(rand.Reader, ed25519Seed[:]); err != nil {
+		return nil, fmt.Errorf("failed to generate Ed25519 seed: %v", err)
 	}
+
+	// Derive Ed25519 keypair from seed
+	privKey := ed25519.NewKeyFromSeed(ed25519Seed[:])
+	pubKey := privKey.Public().(ed25519.PublicKey)
 
 	// Generate X25519 encryption keypair
 	var encPrivKey [32]byte
@@ -658,7 +683,7 @@ func NewIdentity() (*Identity, error) {
 	i := &Identity{
 		privateKey:      encPrivKey[:],
 		publicKey:       encPubKey,
-		signingKey:      privKey,
+		signingSeed:     ed25519Seed[:],
 		verificationKey: pubKey,
 		ratchets:        make(map[string][]byte),
 		ratchetExpiry:   make(map[string]int64),
