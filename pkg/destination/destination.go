@@ -1,6 +1,7 @@
 package destination
 
 import (
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"log"
@@ -13,9 +14,14 @@ import (
 )
 
 const (
+	// Destination direction types
+	// The IN bit specifies that the destination can receive traffic.
+	// The OUT bit specifies that the destination can send traffic.
+	// A destination can be both IN and OUT.
 	IN  = 0x01
 	OUT = 0x02
 
+	// Destination types
 	SINGLE = 0x00
 	GROUP  = 0x01
 	PLAIN  = 0x02
@@ -116,16 +122,23 @@ func New(id *identity.Identity, direction byte, destType byte, appName string, t
 func (d *Destination) calculateHash() []byte {
 	debugLog(DEBUG_TRACE, "Calculating hash for destination %s", d.ExpandName())
 
-	// hash identity first, then concatenate with name hash and truncate
+	// destination_hash = SHA256(name_hash_10bytes + identity_hash_16bytes)[:16]
+	// Identity hash is the truncated hash of the public key (16 bytes)
 	identityHash := identity.TruncatedHash(d.identity.GetPublicKey())
-	nameHash := identity.TruncatedHash([]byte(d.ExpandName()))
+	
+	// Name hash is the FULL 32-byte SHA256, then we take first 10 bytes for concatenation
+	nameHashFull := sha256.Sum256([]byte(d.ExpandName()))
+	nameHash10 := nameHashFull[:10]  // Only use 10 bytes
 
 	debugLog(DEBUG_ALL, "Identity hash: %x", identityHash)
-	debugLog(DEBUG_ALL, "Name hash: %x", nameHash)
+	debugLog(DEBUG_ALL, "Name hash (10 bytes): %x", nameHash10)
 
-	// Concatenate identity hash + name hash
-	combined := append(identityHash, nameHash...)
-	finalHash := identity.TruncatedHash(combined)
+	// Concatenate name_hash (10 bytes) + identity_hash (16 bytes) = 26 bytes
+	combined := append(nameHash10, identityHash...)
+	
+	// Then hash again and truncate to 16 bytes
+	finalHashFull := sha256.Sum256(combined)
+	finalHash := finalHashFull[:16]
 
 	debugLog(DEBUG_VERBOSE, "Calculated destination hash: %x", finalHash)
 
@@ -151,7 +164,8 @@ func (d *Destination) Announce(appData []byte) error {
 	}
 
 	// Create announce packet using announce package
-	announce, err := announce.New(d.identity, appData, false, d.transport.GetConfig())
+	// Pass the destination hash, name, and app data
+	announce, err := announce.New(d.identity, d.hashValue, d.ExpandName(), appData, false, d.transport.GetConfig())
 	if err != nil {
 		return fmt.Errorf("failed to create announce: %w", err)
 	}
