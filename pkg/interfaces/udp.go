@@ -182,7 +182,35 @@ func (ui *UDPInterface) Start() error {
 	}
 	ui.conn = conn
 	ui.Online = true
+	
+	// Start the read loop in a goroutine
+	go ui.readLoop()
+	
 	return nil
+}
+
+func (ui *UDPInterface) readLoop() {
+	buffer := make([]byte, common.DEFAULT_MTU)
+	for ui.IsOnline() && !ui.IsDetached() {
+		n, remoteAddr, err := ui.conn.ReadFromUDP(buffer)
+		if err != nil {
+			if ui.IsOnline() {
+				log.Printf("Error reading from UDP interface %s: %v", ui.Name, err)
+			}
+			return
+		}
+
+		ui.mutex.Lock()
+		if ui.targetAddr == nil {
+			log.Printf("[DEBUG-7] UDP interface %s discovered peer %s", ui.Name, remoteAddr)
+			ui.targetAddr = remoteAddr
+		}
+		ui.mutex.Unlock()
+
+		if ui.packetCallback != nil {
+			ui.packetCallback(buffer[:n], ui)
+		}
+	}
 }
 
 /*
