@@ -58,6 +58,7 @@ type AnnounceHandler interface {
 type Announce struct {
 	mutex           *sync.RWMutex
 	destinationHash []byte
+	destinationName string
 	identity        *identity.Identity
 	appData         []byte
 	config          *common.ReticulumConfig
@@ -72,27 +73,32 @@ type Announce struct {
 	hash            []byte
 }
 
-func New(dest *identity.Identity, appData []byte, pathResponse bool, config *common.ReticulumConfig) (*Announce, error) {
+func New(dest *identity.Identity, destinationHash []byte, destinationName string, appData []byte, pathResponse bool, config *common.ReticulumConfig) (*Announce, error) {
 	if dest == nil {
 		return nil, errors.New("destination identity required")
 	}
 
-	a := &Announce{
-		mutex:        &sync.RWMutex{},
-		identity:     dest,
-		appData:      appData,
-		config:       config,
-		hops:         0,
-		timestamp:    time.Now().Unix(),
-		pathResponse: pathResponse,
-		retries:      0,
-		handlers:     make([]AnnounceHandler, 0),
+	if len(destinationHash) == 0 {
+		return nil, errors.New("destination hash required")
 	}
 
-	// Generate truncated hash from public key
-	pubKey := dest.GetPublicKey()
-	hash := sha256.Sum256(pubKey)
-	a.destinationHash = hash[:identity.TRUNCATED_HASHLENGTH/8]
+	if destinationName == "" {
+		return nil, errors.New("destination name required")
+	}
+
+	a := &Announce{
+		mutex:            &sync.RWMutex{},
+		identity:         dest,
+		destinationHash:  destinationHash,
+		destinationName:  destinationName,
+		appData:          appData,
+		config:           config,
+		hops:             0,
+		timestamp:        time.Now().Unix(),
+		pathResponse:     pathResponse,
+		retries:          0,
+		handlers:         make([]AnnounceHandler, 0),
+	}
 
 	// Get current ratchet ID if enabled
 	currentRatchet := dest.GetCurrentRatchetKey()
@@ -338,7 +344,9 @@ func (a *Announce) CreatePacket() []byte {
 	)
 
 	// 2. Destination Hash
-	destHash := a.identity.Hash()
+	destHash := a.destinationHash
+	if len(destHash) == 0 {
+	}
 
 	// 3. Transport ID (zeros for broadcast announce)
 	transportID := make([]byte, 16)
@@ -353,8 +361,7 @@ func (a *Announce) CreatePacket() []byte {
 	signKey := pubKey[32:]
 
 	// 5.2 Name Hash
-	appName := fmt.Sprintf("%s.%s", a.config.AppName, a.config.AppAspect)
-	nameHash := sha256.Sum256([]byte(appName))
+	nameHash := sha256.Sum256([]byte(a.destinationName))
 	nameHash10 := nameHash[:10]
 
 	// 5.3 Random Hash
@@ -433,9 +440,9 @@ func NewAnnouncePacket(pubKey []byte, appData []byte, announceID []byte) *Announ
 }
 
 // NewAnnounce creates a new announce packet for a destination
-func NewAnnounce(identity *identity.Identity, appData []byte, ratchetID []byte, pathResponse bool, config *common.ReticulumConfig) (*Announce, error) {
-	log.Printf("[DEBUG-7] Creating new announce: appDataLen=%d, hasRatchet=%v, pathResponse=%v",
-		len(appData), ratchetID != nil, pathResponse)
+func NewAnnounce(identity *identity.Identity, destinationHash []byte, appData []byte, ratchetID []byte, pathResponse bool, config *common.ReticulumConfig) (*Announce, error) {
+	log.Printf("[DEBUG-7] Creating new announce: destHash=%x, appDataLen=%d, hasRatchet=%v, pathResponse=%v",
+		destinationHash, len(appData), ratchetID != nil, pathResponse)
 
 	if identity == nil {
 		log.Printf("[DEBUG-7] Error: nil identity provided")
@@ -446,8 +453,12 @@ func NewAnnounce(identity *identity.Identity, appData []byte, ratchetID []byte, 
 		return nil, errors.New("config cannot be nil")
 	}
 
-	destHash := identity.Hash()
-	log.Printf("[DEBUG-7] Generated destination hash: %x", destHash)
+	if len(destinationHash) == 0 {
+		return nil, errors.New("destination hash cannot be empty")
+	}
+
+	destHash := destinationHash
+	log.Printf("[DEBUG-7] Using provided destination hash: %x", destHash)
 
 	a := &Announce{
 		identity:        identity,
