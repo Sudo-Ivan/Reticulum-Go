@@ -784,9 +784,10 @@ func (t *Transport) handleAnnouncePacket(data []byte, iface common.NetworkInterf
 
 	// Check if this passes full RNS validation (signature + destination hash check)
 	hashMaterial := make([]byte, 0)
-	hashMaterial = append(hashMaterial, nameHash...)
-	hashMaterial = append(hashMaterial, id.Hash()...)
-	expectedHash := identity.TruncatedHash(hashMaterial)
+	hashMaterial = append(hashMaterial, nameHash...)        // Name hash (10 bytes) first
+	hashMaterial = append(hashMaterial, id.Hash()...)      // Identity hash (16 bytes) second
+	expectedHashFull := sha256.Sum256(hashMaterial)
+	expectedHash := expectedHashFull[:16]
 
 	log.Printf("[DEBUG-3] Destination hash from packet: %x", destinationHash)
 	log.Printf("[DEBUG-3] Expected destination hash: %x", expectedHash)
