@@ -239,9 +239,18 @@ func (i *Identity) String() string {
 }
 
 func Recall(hash []byte) (*Identity, error) {
-	// TODO: Implement persistence
-	// For now just create new identity
-	return New()
+	hashStr := hex.EncodeToString(hash)
+	
+	if data, exists := knownDestinations[hashStr]; exists {
+		// data is [packet, destHash, identity, appData]
+		if len(data) >= 3 {
+			if id, ok := data[2].(*Identity); ok {
+				return id, nil
+			}
+		}
+	}
+	
+	return nil, fmt.Errorf("identity not found for hash %x", hash)
 }
 
 func (i *Identity) GenerateHMACKey() []byte {
