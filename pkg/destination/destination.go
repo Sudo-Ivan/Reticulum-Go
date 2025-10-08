@@ -119,6 +119,33 @@ func New(id *identity.Identity, direction byte, destType byte, appName string, t
 	return d, nil
 }
 
+// FromHash creates a destination from a known hash (e.g., from an announce).
+// This is used by clients to create destination objects for servers they've discovered.
+func FromHash(hash []byte, id *identity.Identity, destType byte, transport *transport.Transport) (*Destination, error) {
+	debugLog(DEBUG_INFO, "Creating destination from hash: %x", hash)
+
+	if id == nil {
+		debugLog(DEBUG_ERROR, "Cannot create destination: identity is nil")
+		return nil, errors.New("identity cannot be nil")
+	}
+
+	d := &Destination{
+		identity:        id,
+		direction:       OUT,
+		destType:        destType,
+		hashValue:       hash,
+		transport:       transport,
+		acceptsLinks:    false,
+		proofStrategy:   PROVE_NONE,
+		ratchetCount:    RATCHET_COUNT,
+		ratchetInterval: RATCHET_INTERVAL,
+		requestHandlers: make(map[string]*RequestHandler),
+	}
+
+	debugLog(DEBUG_VERBOSE, "Created destination from hash: %x", hash)
+	return d, nil
+}
+
 func (d *Destination) calculateHash() []byte {
 	debugLog(DEBUG_TRACE, "Calculating hash for destination %s", d.ExpandName())
 
@@ -207,12 +234,43 @@ func (d *Destination) AcceptsLinks(accepts bool) {
 	d.mutex.Lock()
 	defer d.mutex.Unlock()
 	d.acceptsLinks = accepts
+	
+	// Register with transport if accepting links
+	if accepts && d.transport != nil {
+		d.transport.RegisterDestination(d.hashValue, d)
+		debugLog(DEBUG_VERBOSE, "Destination %x registered with transport for link requests", d.hashValue)
+	}
 }
 
 func (d *Destination) SetLinkEstablishedCallback(callback common.LinkEstablishedCallback) {
 	d.mutex.Lock()
 	defer d.mutex.Unlock()
 	d.linkCallback = callback
+}
+
+func (d *Destination) GetLinkCallback() common.LinkEstablishedCallback {
+	d.mutex.RLock()
+	defer d.mutex.RUnlock()
+	return d.linkCallback
+}
+
+func (d *Destination) HandleIncomingLinkRequest(linkID []byte, transport interface{}, networkIface common.NetworkInterface) error {
+	debugLog(DEBUG_INFO, "Handling incoming link request for destination %x", d.GetHash())
+	
+	// Import link package here to avoid circular dependency at package level
+	// We'll use dynamic import by having the caller create the link
+	// For now, just call the callback with a placeholder
+	
+	if d.linkCallback != nil {
+		debugLog(DEBUG_INFO, "Calling link established callback")
+		// Pass linkID as the link object for now
+		// The callback will need to handle creating the actual link
+		d.linkCallback(linkID)
+	} else {
+		debugLog(DEBUG_VERBOSE, "No link callback set")
+	}
+	
+	return nil
 }
 
 func (d *Destination) SetPacketCallback(callback common.PacketCallback) {
