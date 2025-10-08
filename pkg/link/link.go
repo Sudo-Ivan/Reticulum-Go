@@ -135,7 +135,15 @@ func (l *Link) Establish() error {
 		return errors.New("destination has no public key")
 	}
 
-	log.Printf("[DEBUG-4] Creating link request packet for destination %x", destPublicKey[:8])
+	// Generate link ID for this connection
+	l.linkID = make([]byte, 16)
+	if _, err := rand.Read(l.linkID); err != nil {
+		log.Printf("[DEBUG-3] Failed to generate link ID: %v", err)
+		return fmt.Errorf("failed to generate link ID: %w", err)
+	}
+	l.initiator = true
+
+	log.Printf("[DEBUG-4] Creating link request packet for destination %x with link ID %x", destPublicKey[:8], l.linkID[:8])
 
 	p := &packet.Packet{
 		HeaderType:      packet.HeaderType1,
