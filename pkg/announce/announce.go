@@ -332,17 +332,6 @@ func (a *Announce) CreatePacket() []byte {
 	// Announce Data Structure:
 	// [Public Key (32 bytes)][Signing Key (32 bytes)][Name Hash (10 bytes)][Random Hash (10 bytes)][Ratchet (32 bytes)][Signature (64 bytes)][App Data]
 
-	// 1. Create Header
-	header := CreateHeader(
-		IFAC_NONE,
-		HEADER_TYPE_2,
-		0, // No context flag for announce
-		PROP_TYPE_BROADCAST,
-		DEST_TYPE_SINGLE,
-		PACKET_TYPE_ANNOUNCE,
-		a.hops,
-	)
-
 	// 2. Destination Hash
 	destHash := a.destinationHash
 	if len(destHash) == 0 {
@@ -350,9 +339,6 @@ func (a *Announce) CreatePacket() []byte {
 
 	// 3. Transport ID (zeros for broadcast announce)
 	transportID := make([]byte, 16)
-
-	// 4. Context Byte (zero for announce)
-	contextByte := byte(0)
 
 	// 5. Announce Data
 	// 5.1 Public Keys
@@ -371,25 +357,48 @@ func (a *Announce) CreatePacket() []byte {
 		log.Printf("Error reading random bytes for announce: %v", err)
 	}
 
-	// 5.4 Ratchet
-	ratchetData := make([]byte, 32)
+	// 5.4 Ratchet (only include if exists)
+	var ratchetData []byte
 	currentRatchetKey := a.identity.GetCurrentRatchetKey()
 	if currentRatchetKey != nil {
 		ratchetPub, err := curve25519.X25519(currentRatchetKey, curve25519.Basepoint)
 		if err == nil {
+			ratchetData = make([]byte, 32)
 			copy(ratchetData, ratchetPub)
 		}
 	}
+	
+	// Determine context flag based on whether ratchet exists
+	contextFlag := byte(0)
+	if len(ratchetData) > 0 {
+		contextFlag = 1 // FLAG_SET
+	}
+
+	// 1. Create Header (now that we know context flag)
+	header := CreateHeader(
+		IFAC_NONE,
+		HEADER_TYPE_2,
+		contextFlag,
+		PROP_TYPE_BROADCAST,
+		DEST_TYPE_SINGLE,
+		PACKET_TYPE_ANNOUNCE,
+		a.hops,
+	)
+
+	// 4. Context Byte
+	contextByte := byte(0)
 
 	// 5.5 Signature
-	// The signature is calculated over: Dest Hash + Public Keys + Name Hash + Random Hash + Ratchet + App Data
+	// The signature is calculated over: Dest Hash + Public Keys + Name Hash + Random Hash + Ratchet (if exists) + App Data
 	validationData := make([]byte, 0)
 	validationData = append(validationData, destHash...)
 	validationData = append(validationData, encKey...)
 	validationData = append(validationData, signKey...)
 	validationData = append(validationData, nameHash10...)
 	validationData = append(validationData, randomHash...)
-	validationData = append(validationData, ratchetData...)
+	if len(ratchetData) > 0 {
+		validationData = append(validationData, ratchetData...)
+	}
 	validationData = append(validationData, a.appData...)
 	signature := a.identity.Sign(validationData)
 
@@ -403,7 +412,9 @@ func (a *Announce) CreatePacket() []byte {
 	packet = append(packet, signKey...)
 	packet = append(packet, nameHash10...)
 	packet = append(packet, randomHash...)
-	packet = append(packet, ratchetData...)
+	if len(ratchetData) > 0 {
+		packet = append(packet, ratchetData...)
+	}
 	packet = append(packet, signature...)
 	packet = append(packet, a.appData...)
 
