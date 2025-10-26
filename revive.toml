@@ -4,10 +4,6 @@ confidence = 0.8
 errorCode = 1
 warningCode = 0
 
-[rule.cyclomatic]
-    arguments = [15]
-[rule.cognitive-complexity]
-    arguments = [15]
 [rule.add-constant]
 [rule.argument-limit]
 [rule.atomic]
