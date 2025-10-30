@@ -1,0 +1,66 @@
+name: TinyGo Build
+
+on:
+  push:
+    branches: [ "main", "master" ]
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [ "main", "master" ]
+
+jobs:
+  tinygo-build:
+    permissions:
+      contents: read
+
+    strategy:
+      matrix:
+        include:
+          - name: tinygo-default
+            target: ""
+            output: reticulum-go-tinygo
+            make_target: tinygo-build
+          - name: tinygo-wasm
+            target: wasm
+            output: reticulum-go.wasm
+            make_target: tinygo-wasm
+
+    runs-on: ubuntu-latest
+
+    outputs:
+      build_complete: ${{ steps.build_step.outcome == 'success' }}
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v6
+      with:
+        go-version: '1.24'
+
+    - name: Install TinyGo
+      run: |
+        wget https://github.com/tinygo-org/tinygo/releases/download/v0.37.0/tinygo_0.37.0_amd64.deb
+        sudo dpkg -i tinygo_0.37.0_amd64.deb
+
+    - name: Build with TinyGo
+      id: build_step
+      run: |
+        make ${{ matrix.make_target }}
+        output_name="${{ matrix.output }}"
+        if [ -f "bin/${output_name}" ]; then
+          sha256sum "bin/${output_name}" | cut -d' ' -f1 > "bin/${output_name}.sha256"
+          echo "Built: ${output_name}"
+          echo "Generated checksum: bin/${output_name}.sha256"
+        else
+          echo "Build output not found: bin/${output_name}"
+          ls -la bin/
+          exit 1
+        fi
+
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ matrix.name }}
+        path: bin/${{ matrix.output }}*

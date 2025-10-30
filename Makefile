@@ -15,7 +15,7 @@ MAIN_PACKAGE=./cmd/reticulum-go
 
 ALL_PACKAGES=$$(go list ./... | grep -v /vendor/)
 
-.PHONY: all build build-experimental experimental release lint bench bench-experimental bench-compare clean test coverage deps help
+.PHONY: all build build-experimental experimental release lint bench bench-experimental bench-compare clean test coverage deps help tinygo-build tinygo-wasm
 
 all: clean deps build test
 
@@ -105,6 +105,14 @@ build-all: build-linux build-windows build-darwin build-freebsd build-openbsd bu
 run:
 	@./$(BUILD_DIR)/$(BINARY_NAME)
 
+tinygo-build:
+	@mkdir -p $(BUILD_DIR)
+	tinygo build -o $(BUILD_DIR)/$(BINARY_NAME)-tinygo -size short $(MAIN_PACKAGE)
+
+tinygo-wasm:
+	@mkdir -p $(BUILD_DIR)
+	tinygo build -target wasm -o $(BUILD_DIR)/$(BINARY_NAME).wasm $(MAIN_PACKAGE)
+
 install:
 	$(GOMOD) download
 
@@ -133,4 +141,6 @@ help:
 	@echo "  build-riscv  - Build for RISC-V architecture (riscv64)"
 	@echo "  build-all    - Build for all platforms and architectures"
 	@echo "  run          - Run reticulum binary"
+	@echo "  tinygo-build - Build binary with TinyGo compiler"
+	@echo "  tinygo-wasm  - Build WebAssembly binary with TinyGo compiler"
 	@echo "  install      - Install dependencies" 
