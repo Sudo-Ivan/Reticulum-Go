@@ -5,3 +5,5 @@ logs/
 .json
 
 bin/
+
+examples/
