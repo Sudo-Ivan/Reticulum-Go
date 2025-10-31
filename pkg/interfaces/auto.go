@@ -31,10 +31,10 @@ type AutoInterface struct {
 	peers             map[string]*Peer
 	linkLocalAddrs    []string
 	adoptedInterfaces map[string]string
-	interfaceServers  map[string]net.PacketConn
+	interfaceServers  map[string]net.Conn
 	multicastEchoes   map[string]time.Time
 	mutex             sync.RWMutex
-	outboundConn      net.PacketConn
+	outboundConn      net.Conn
 }
 
 type Peer struct {
@@ -63,7 +63,7 @@ func NewAutoInterface(name string, config *common.InterfaceConfig) (*AutoInterfa
 		peers:             make(map[string]*Peer),
 		linkLocalAddrs:    make([]string, 0),
 		adoptedInterfaces: make(map[string]string),
-		interfaceServers:  make(map[string]*net.UDPConn),
+		interfaceServers:  make(map[string]net.Conn),
 		multicastEchoes:   make(map[string]time.Time),
 	}
 
@@ -97,45 +97,26 @@ func (ai *AutoInterface) startDiscoveryListener(iface *net.Interface) error {
 }
 
 func (ai *AutoInterface) startDataListener(iface *net.Interface) error {
-	addr := &net.UDPAddr{
-		IP:   net.IPv6zero,
-		Port: ai.dataPort,
-		Zone: iface.Name,
-	}
-
-	conn, err := net.ListenPacket("udp6", addr.String())
-	if err != nil {
-		return err
-	}
-
-	ai.interfaceServers[iface.Name] = conn
-	go ai.handleData(conn)
-	return nil
+	// TinyGo doesn't support UDP servers
+	return fmt.Errorf("startDataListener not supported in TinyGo")
 }
 
-func (ai *AutoInterface) handleDiscovery(conn net.PacketConn, ifaceName string) {
+func (ai *AutoInterface) handleDiscovery(conn net.Conn, ifaceName string) {
+	// Not used in TinyGo
 	buf := make([]byte, 1024)
 	for {
-		_, addr, err := conn.ReadFrom(buf)
+		_, err := conn.Read(buf)
 		if err != nil {
 			log.Printf("Discovery read error: %v", err)
 			continue
 		}
-
-		remoteAddr, ok := addr.(*net.UDPAddr)
-		if !ok {
-			log.Printf("Error: received non-UDP address in discovery")
-			continue
-		}
-
-		ai.handlePeerAnnounce(remoteAddr, ifaceName)
 	}
 }
 
-func (ai *AutoInterface) handleData(conn net.PacketConn) {
+func (ai *AutoInterface) handleData(conn net.Conn) {
 	buf := make([]byte, ai.GetMTU())
 	for {
-		n, _, err := conn.ReadFrom(buf)
+		n, err := conn.Read(buf)
 		if err != nil {
 			if !ai.IsDetached() {
 				log.Printf("Data read error: %v", err)
@@ -191,31 +172,8 @@ func (ai *AutoInterface) peerJobs() {
 }
 
 func (ai *AutoInterface) Send(data []byte, address string) error {
-	ai.mutex.RLock()
-	defer ai.mutex.RUnlock()
-
-	for _, peer := range ai.peers {
-		addr := &net.UDPAddr{
-			IP:   net.ParseIP(address),
-			Port: ai.dataPort,
-			Zone: peer.ifaceName,
-		}
-
-		if ai.outboundConn == nil {
-			var err error
-			ai.outboundConn, err = net.ListenPacket("udp6", ":0")
-			if err != nil {
-				return err
-			}
-		}
-
-		if _, err := ai.outboundConn.WriteTo(data, addr); err != nil {
-			log.Printf("Failed to send to peer %s: %v", address, err)
-			continue
-		}
-	}
-
-	return nil
+	// TinyGo doesn't support UDP outbound connections for auto-discovery
+	return fmt.Errorf("Send not supported in TinyGo - requires UDP client connections")
 }
 
 func (ai *AutoInterface) Stop() error {

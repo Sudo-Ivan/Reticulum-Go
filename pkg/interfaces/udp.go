@@ -11,7 +11,7 @@ import (
 
 type UDPInterface struct {
 	BaseInterface
-	conn       net.PacketConn
+	conn       net.Conn
 	addr       *net.UDPAddr
 	targetAddr *net.UDPAddr
 	mutex      sync.RWMutex
@@ -123,11 +123,7 @@ func (ui *UDPInterface) ProcessOutgoing(data []byte) error {
 		return fmt.Errorf("interface offline")
 	}
 
-	if ui.targetAddr == nil {
-		return fmt.Errorf("no target address configured")
-	}
-
-	_, err := ui.conn.WriteTo(data, ui.targetAddr)
+	_, err := ui.conn.Write(data)
 	if err != nil {
 		return fmt.Errorf("UDP write failed: %v", err)
 	}
@@ -176,42 +172,21 @@ func (ui *UDPInterface) Disable() {
 }
 
 func (ui *UDPInterface) Start() error {
-	conn, err := net.ListenPacket("udp", ui.addr.String())
-	if err != nil {
-		return err
-	}
-	ui.conn = conn
-	ui.Online = true
-
-	// Start the read loop in a goroutine
-	go ui.readLoop()
-
-	return nil
+	// TinyGo doesn't support UDP servers, only clients
+	return fmt.Errorf("UDPInterface not supported in TinyGo - UDP server functionality requires net.ListenUDP")
 }
 
 func (ui *UDPInterface) readLoop() {
+	// This method is not used in TinyGo since UDP servers are not supported
 	buffer := make([]byte, common.DEFAULT_MTU)
 	for ui.IsOnline() && !ui.IsDetached() {
-		n, addr, err := ui.conn.ReadFrom(buffer)
+		n, err := ui.conn.Read(buffer)
 		if err != nil {
 			if ui.IsOnline() {
 				log.Printf("Error reading from UDP interface %s: %v", ui.Name, err)
 			}
 			return
 		}
-
-		remoteAddr, ok := addr.(*net.UDPAddr)
-		if !ok {
-			log.Printf("Error: received non-UDP address from UDP interface %s", ui.Name)
-			continue
-		}
-
-		ui.mutex.Lock()
-		if ui.targetAddr == nil {
-			log.Printf("[DEBUG-7] UDP interface %s discovered peer %s", ui.Name, remoteAddr)
-			ui.targetAddr = remoteAddr
-		}
-		ui.mutex.Unlock()
 
 		if ui.packetCallback != nil {
 			ui.packetCallback(buffer[:n], ui)
