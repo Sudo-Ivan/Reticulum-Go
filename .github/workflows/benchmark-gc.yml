@@ -1,5 +1,3 @@
-# TODO: Add full length action hashes for all actions
-
 name: Benchmark GC Performance
 
 on:
@@ -18,15 +16,15 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
 
     - name: Set up Go
-      uses: actions/setup-go@v4
+      uses: actions/setup-go@44694675825211faa026b3c33043df3e48a5fa00 # v6.0.0
       with:
         go-version: '1.25'
 
     - name: Cache Go modules
-      uses: actions/cache@v3
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:
         path: |
           ~/.cache/go-build
