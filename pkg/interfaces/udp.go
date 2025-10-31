@@ -76,28 +76,8 @@ func (ui *UDPInterface) Detach() {
 }
 
 func (ui *UDPInterface) Send(data []byte, addr string) error {
-	log.Printf("[DEBUG-7] UDP interface %s: Sending %d bytes", ui.Name, len(data))
-
-	if !ui.IsEnabled() {
-		return fmt.Errorf("interface not enabled")
-	}
-
-	if ui.targetAddr == nil {
-		return fmt.Errorf("no target address configured")
-	}
-
-	// Update TX stats before sending
-	ui.mutex.Lock()
-	ui.TxBytes += uint64(len(data))
-	ui.mutex.Unlock()
-
-	_, err := ui.conn.WriteTo(data, ui.targetAddr)
-	if err != nil {
-		log.Printf("[DEBUG-1] UDP interface %s: Write failed: %v", ui.Name, err)
-	} else {
-		log.Printf("[DEBUG-7] UDP interface %s: Sent %d bytes successfully", ui.Name, len(data))
-	}
-	return err
+	// TinyGo doesn't support UDP sending
+	return fmt.Errorf("UDPInterface Send not supported in TinyGo - requires UDP client functionality")
 }
 
 func (ui *UDPInterface) SetPacketCallback(callback common.PacketCallback) {
