@@ -11,7 +11,7 @@ import (
 
 type UDPInterface struct {
 	BaseInterface
-	conn       *net.UDPConn
+	conn       net.PacketConn
 	addr       *net.UDPAddr
 	targetAddr *net.UDPAddr
 	mutex      sync.RWMutex
@@ -127,7 +127,7 @@ func (ui *UDPInterface) ProcessOutgoing(data []byte) error {
 		return fmt.Errorf("no target address configured")
 	}
 
-	_, err := ui.conn.WriteToUDP(data, ui.targetAddr)
+	_, err := ui.conn.WriteTo(data, ui.targetAddr)
 	if err != nil {
 		return fmt.Errorf("UDP write failed: %v", err)
 	}
@@ -176,28 +176,34 @@ func (ui *UDPInterface) Disable() {
 }
 
 func (ui *UDPInterface) Start() error {
-	conn, err := net.ListenUDP("udp", ui.addr)
+	conn, err := net.ListenPacket("udp", ui.addr.String())
 	if err != nil {
 		return err
 	}
 	ui.conn = conn
 	ui.Online = true
-	
+
 	// Start the read loop in a goroutine
 	go ui.readLoop()
-	
+
 	return nil
 }
 
 func (ui *UDPInterface) readLoop() {
 	buffer := make([]byte, common.DEFAULT_MTU)
 	for ui.IsOnline() && !ui.IsDetached() {
-		n, remoteAddr, err := ui.conn.ReadFromUDP(buffer)
+		n, addr, err := ui.conn.ReadFrom(buffer)
 		if err != nil {
 			if ui.IsOnline() {
 				log.Printf("Error reading from UDP interface %s: %v", ui.Name, err)
 			}
 			return
+		}
+
+		remoteAddr, ok := addr.(*net.UDPAddr)
+		if !ok {
+			log.Printf("Error: received non-UDP address from UDP interface %s", ui.Name)
+			continue
 		}
 
 		ui.mutex.Lock()

@@ -31,16 +31,16 @@ type AutoInterface struct {
 	peers             map[string]*Peer
 	linkLocalAddrs    []string
 	adoptedInterfaces map[string]string
-	interfaceServers  map[string]*net.UDPConn
+	interfaceServers  map[string]net.PacketConn
 	multicastEchoes   map[string]time.Time
 	mutex             sync.RWMutex
-	outboundConn      *net.UDPConn
+	outboundConn      net.PacketConn
 }
 
 type Peer struct {
 	ifaceName string
 	lastHeard time.Time
-	conn      *net.UDPConn
+	conn      net.PacketConn
 }
 
 func NewAutoInterface(name string, config *common.InterfaceConfig) (*AutoInterface, error) {
@@ -81,70 +81,19 @@ func NewAutoInterface(name string, config *common.InterfaceConfig) (*AutoInterfa
 }
 
 func (ai *AutoInterface) Start() error {
-	interfaces, err := net.Interfaces()
-	if err != nil {
-		return fmt.Errorf("failed to list interfaces: %v", err)
-	}
-
-	for _, iface := range interfaces {
-		if err := ai.configureInterface(&iface); err != nil {
-			log.Printf("Failed to configure interface %s: %v", iface.Name, err)
-			continue
-		}
-	}
-
-	if len(ai.adoptedInterfaces) == 0 {
-		return fmt.Errorf("no suitable interfaces found")
-	}
-
-	// Mark interface as online
-	ai.Online = true
-	ai.Enabled = true
-
-	go ai.peerJobs()
-	return nil
+	// TinyGo doesn't support net.Interfaces() or multicast UDP
+	// AutoInterface requires these features, so return an error
+	return fmt.Errorf("AutoInterface not supported in TinyGo - requires interface enumeration and multicast UDP")
 }
 
 func (ai *AutoInterface) configureInterface(iface *net.Interface) error {
-	addrs, err := iface.Addrs()
-	if err != nil {
-		return err
-	}
-
-	for _, addr := range addrs {
-		if ipnet, ok := addr.(*net.IPNet); ok && ipnet.IP.IsLinkLocalUnicast() {
-			ai.adoptedInterfaces[iface.Name] = ipnet.IP.String()
-			ai.multicastEchoes[iface.Name] = time.Now()
-
-			if err := ai.startDiscoveryListener(iface); err != nil {
-				return err
-			}
-
-			if err := ai.startDataListener(iface); err != nil {
-				return err
-			}
-
-			break
-		}
-	}
-
-	return nil
+	// Not supported in TinyGo
+	return fmt.Errorf("configureInterface not supported in TinyGo")
 }
 
 func (ai *AutoInterface) startDiscoveryListener(iface *net.Interface) error {
-	addr := &net.UDPAddr{
-		IP:   net.ParseIP(fmt.Sprintf("ff%s%s::1", ai.discoveryScope, SCOPE_LINK)),
-		Port: ai.discoveryPort,
-		Zone: iface.Name,
-	}
-
-	conn, err := net.ListenMulticastUDP("udp6", iface, addr)
-	if err != nil {
-		return err
-	}
-
-	go ai.handleDiscovery(conn, iface.Name)
-	return nil
+	// Multicast UDP not supported in TinyGo
+	return fmt.Errorf("startDiscoveryListener not supported in TinyGo - requires multicast UDP")
 }
 
 func (ai *AutoInterface) startDataListener(iface *net.Interface) error {
@@ -154,7 +103,7 @@ func (ai *AutoInterface) startDataListener(iface *net.Interface) error {
 		Zone: iface.Name,
 	}
 
-	conn, err := net.ListenUDP("udp6", addr)
+	conn, err := net.ListenPacket("udp6", addr.String())
 	if err != nil {
 		return err
 	}
@@ -164,12 +113,18 @@ func (ai *AutoInterface) startDataListener(iface *net.Interface) error {
 	return nil
 }
 
-func (ai *AutoInterface) handleDiscovery(conn *net.UDPConn, ifaceName string) {
+func (ai *AutoInterface) handleDiscovery(conn net.PacketConn, ifaceName string) {
 	buf := make([]byte, 1024)
 	for {
-		_, remoteAddr, err := conn.ReadFromUDP(buf)
+		_, addr, err := conn.ReadFrom(buf)
 		if err != nil {
 			log.Printf("Discovery read error: %v", err)
+			continue
+		}
+
+		remoteAddr, ok := addr.(*net.UDPAddr)
+		if !ok {
+			log.Printf("Error: received non-UDP address in discovery")
 			continue
 		}
 
@@ -177,10 +132,10 @@ func (ai *AutoInterface) handleDiscovery(conn *net.UDPConn, ifaceName string) {
 	}
 }
 
-func (ai *AutoInterface) handleData(conn *net.UDPConn) {
+func (ai *AutoInterface) handleData(conn net.PacketConn) {
 	buf := make([]byte, ai.GetMTU())
 	for {
-		n, _, err := conn.ReadFromUDP(buf)
+		n, _, err := conn.ReadFrom(buf)
 		if err != nil {
 			if !ai.IsDetached() {
 				log.Printf("Data read error: %v", err)
@@ -248,13 +203,13 @@ func (ai *AutoInterface) Send(data []byte, address string) error {
 
 		if ai.outboundConn == nil {
 			var err error
-			ai.outboundConn, err = net.ListenUDP("udp6", &net.UDPAddr{Port: 0})
+			ai.outboundConn, err = net.ListenPacket("udp6", ":0")
 			if err != nil {
 				return err
 			}
 		}
 
-		if _, err := ai.outboundConn.WriteToUDP(data, addr); err != nil {
+		if _, err := ai.outboundConn.WriteTo(data, addr); err != nil {
 			log.Printf("Failed to send to peer %s: %v", address, err)
 			continue
 		}
