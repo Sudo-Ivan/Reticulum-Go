@@ -2,11 +2,9 @@ name: TinyGo Build
 
 on:
   push:
-    branches: [ "main", "master" ]
-    tags:
-      - 'v*'
+    branches: [ "tinygo" ]
   pull_request:
-    branches: [ "main", "master" ]
+    branches: [ "tinygo" ]
 
 jobs:
   tinygo-build:
