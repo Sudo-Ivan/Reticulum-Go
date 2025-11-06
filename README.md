@@ -1,50 +1,64 @@
+[![Socket Badge](https://socket.dev/api/badge/go/package/github.com/sudo-ivan/reticulum-go?version=v0.4.0)](https://socket.dev/go/package/github.com/sudo-ivan/reticulum-go)
+![Multi-Platform Tests](https://github.com/Sudo-Ivan/Reticulum-Go/actions/workflows/go-test.yml/badge.svg)
+![Gosec Scan](https://github.com/Sudo-Ivan/Reticulum-Go/actions/workflows/gosec.yml/badge.svg)
+[![Multi-Platform Build](https://github.com/Sudo-Ivan/Reticulum-Go/actions/workflows/build.yml/badge.svg)](https://github.com/Sudo-Ivan/Reticulum-Go/actions/workflows/build.yml)
+[![Revive Linter](https://github.com/Sudo-Ivan/Reticulum-Go/actions/workflows/revive.yml/badge.svg)](https://github.com/Sudo-Ivan/Reticulum-Go/actions/workflows/revive.yml)
+
 # Reticulum-Go
 
+A Go implementation of the [Reticulum Network Protocol](https://github.com/markqvist/Reticulum).
+
 > [!WARNING]  
-> This project is still work in progress. Currently not compatible with the Python version.
+> This project is currently in development and is not yet compatible with the Python reference implementation.
 
-[![Socket Badge](https://socket.dev/api/badge/go/package/github.com/sudo-ivan/reticulum-go?version=v0.4.0)](https://socket.dev/go/package/github.com/sudo-ivan/reticulum-go)
-![Go Test Multi-Platform](https://github.com/Sudo-Ivan/Reticulum-Go/actions/workflows/go-test.yml/badge.svg)
-![Run Gosec](https://github.com/Sudo-Ivan/Reticulum-Go/actions/workflows/gosec.yml/badge.svg)
-[![Go Build Multi-Platform](https://github.com/Sudo-Ivan/Reticulum-Go/actions/workflows/build.yml/badge.svg)](https://github.com/Sudo-Ivan/Reticulum-Go/actions/workflows/build.yml)
-[![Go Revive Lint](https://github.com/Sudo-Ivan/Reticulum-Go/actions/workflows/revive.yml/badge.svg)](https://github.com/Sudo-Ivan/Reticulum-Go/actions/workflows/revive.yml)
+## Goals
 
-[Reticulum Network](https://github.com/markqvist/Reticulum) implementation in Go `1.25+`.
+- To be fully compatible with the Python reference implementation.
+- Additional privacy and security features.
+- Support for a broader range of platforms and architectures old and new.
 
-Aiming to be fully compatible with the Python version. 
+## Quick Start
 
-Feel free to join our seperate [matrix](https://matrix.to/#/#reticulum-go-dev:matrix.org) channel for this implementation.
+### Prerequisites
 
-## Usage
+- Go 1.24 or later
 
-### Building
+### Build
 
-Requires Go 1.25+
-
-```
-make install
+```bash
 make build
+```
+
+### Run
+
+```bash
 make run
 ```
 
-### Experimental Green Tea GC 
+### Test
 
-New GC as of Go 1.25.
+```bash
+make test
+```
 
-See [greenteagc github issue](https://github.com/golang/go/issues/73581) for more info.
+## Embedded systems and WebAssembly
+
+For building for WebAssembly and embedded systems, see the [tinygo branch](https://github.com/Sudo-Ivan/Reticulum-Go/tree/tinygo). Requires TinyGo 0.37.0+.
+
+```bash
+make tinygo-build
+make tinygo-wasm
+```
+
+### Experimental Features
+
+Build with experimental Green Tea GC (Go 1.25+):
 
 ```bash
 make build-experimental
 ```
 
-## Linter
+## Official Channels
 
-[Revive](https://github.com/mgechev/revive)
-
-```bash
-revive -config revive.toml -formatter friendly ./pkg/* ./cmd/* ./internal/*
-```
-
-## Cryptographic Libraries
-
-- `golang.org/x/crypto` `v0.42.0` - Cryptographic primitives
+- [Telegram](https://t.me/reticulum_go)
+- [Matrix](https://matrix.to/#/#reticulum-go-dev:matrix.org)
