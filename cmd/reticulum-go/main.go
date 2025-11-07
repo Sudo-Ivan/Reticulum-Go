@@ -4,7 +4,6 @@ import (
 	"encoding/binary"
 	"flag"
 	"fmt"
-	"log"
 	"os"
 	"os/signal"
 	"runtime"
@@ -16,6 +15,7 @@ import (
 	"github.com/Sudo-Ivan/reticulum-go/pkg/buffer"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/channel"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/common"
+	"github.com/Sudo-Ivan/reticulum-go/pkg/debug"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/destination"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/identity"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/interfaces"
@@ -24,29 +24,15 @@ import (
 )
 
 var (
-	debugLevel       = flag.Int("debug", 7, "Debug level (0-7)")
 	interceptPackets = flag.Bool("intercept-packets", false, "Enable packet interception")
 	interceptOutput  = flag.String("intercept-output", "packets.log", "Output file for intercepted packets")
 )
-
-func debugLog(level int, format string, v ...interface{}) {
-	if *debugLevel >= level {
-		log.Printf("[DEBUG-%d] %s", level, fmt.Sprintf(format, v...))
-	}
-}
 
 const (
 	ANNOUNCE_RATE_TARGET  = 3600 // Default target time between announces (1 hour)
 	ANNOUNCE_RATE_GRACE   = 3    // Number of grace announces before enforcing rate
 	ANNOUNCE_RATE_PENALTY = 7200 // Additional penalty time for rate violations
 	MAX_ANNOUNCE_HOPS     = 128  // Maximum number of hops for announces
-	DEBUG_CRITICAL        = 1    // Critical errors
-	DEBUG_ERROR           = 2    // Non-critical errors
-	DEBUG_INFO            = 3    // Important information
-	DEBUG_VERBOSE         = 4    // Detailed information
-	DEBUG_TRACE           = 5    // Very detailed tracing
-	DEBUG_PACKETS         = 6    // Packet-level details
-	DEBUG_ALL             = 7    // Everything including identity operations
 	APP_NAME              = "Go-Client"
 	APP_ASPECT            = "node" // Always use "node" for node announces
 )
@@ -90,19 +76,19 @@ func NewReticulum(cfg *common.ReticulumConfig) (*Reticulum, error) {
 	if err := initializeDirectories(); err != nil {
 		return nil, fmt.Errorf("failed to initialize directories: %v", err)
 	}
-	debugLog(3, "Directories initialized")
+	debug.Log(debug.DEBUG_INFO, "Directories initialized")
 
 	t := transport.NewTransport(cfg)
-	debugLog(3, "Transport initialized")
+	debug.Log(debug.DEBUG_INFO, "Transport initialized")
 
 	identity, err := identity.NewIdentity()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create identity: %v", err)
 	}
-	debugLog(2, "Created new identity: %x", identity.Hash())
+	debug.Log(debug.DEBUG_ERROR, "Created new identity", "hash", fmt.Sprintf("%x", identity.Hash()))
 
 	// Create destination
-	debugLog(DEBUG_INFO, "Creating destination...")
+	debug.Log(debug.DEBUG_INFO, "Creating destination...")
 	dest, err := destination.New(
 		identity,
 		destination.IN,
@@ -114,7 +100,7 @@ func NewReticulum(cfg *common.ReticulumConfig) (*Reticulum, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to create destination: %v", err)
 	}
-	debugLog(DEBUG_INFO, "Created destination with hash: %x", dest.GetHash())
+	debug.Log(debug.DEBUG_INFO, "Created destination with hash", "hash", fmt.Sprintf("%x", dest.GetHash()))
 
 	// Set node metadata
 	nodeTimestamp := time.Now().Unix()
@@ -143,7 +129,7 @@ func NewReticulum(cfg *common.ReticulumConfig) (*Reticulum, error) {
 	ratchetPath := ".reticulum-go/storage/ratchets/" + r.identity.GetHexHash()
 	dest.EnableRatchets(ratchetPath)
 	dest.SetProofStrategy(destination.PROVE_APP)
-	debugLog(DEBUG_VERBOSE, "Configured destination features")
+	debug.Log(debug.DEBUG_VERBOSE, "Configured destination features")
 
 	// Initialize interfaces from config
 	for name, ifaceConfig := range cfg.Interfaces {
@@ -174,7 +160,7 @@ func NewReticulum(cfg *common.ReticulumConfig) (*Reticulum, error) {
 		case "AutoInterface":
 			iface, err = interfaces.NewAutoInterface(name, ifaceConfig)
 		default:
-			debugLog(1, "Unknown interface type: %s", ifaceConfig.Type)
+			debug.Log(debug.DEBUG_CRITICAL, "Unknown interface type", "type", ifaceConfig.Type)
 			continue
 		}
 
@@ -182,30 +168,30 @@ func NewReticulum(cfg *common.ReticulumConfig) (*Reticulum, error) {
 			if cfg.PanicOnInterfaceErr {
 				return nil, fmt.Errorf("failed to create interface %s: %v", name, err)
 			}
-			debugLog(1, "Error creating interface %s: %v", name, err)
+			debug.Log(debug.DEBUG_CRITICAL, "Error creating interface", "name", name, "error", err)
 			continue
 		}
 
 		// Set packet callback
 		iface.SetPacketCallback(func(data []byte, ni common.NetworkInterface) {
-			debugLog(3, "Packet callback called for interface %s, data len: %d", ni.GetName(), len(data))
+			debug.Log(debug.DEBUG_INFO, "Packet callback called for interface", "name", ni.GetName(), "data_len", len(data))
 			if r.transport != nil {
 				r.transport.HandlePacket(data, ni)
 			} else {
-				debugLog(1, "Transport is nil in packet callback")
+				debug.Log(debug.DEBUG_CRITICAL, "Transport is nil in packet callback")
 			}
 		})
 
-		debugLog(2, "Configuring interface %s (type=%s)...", name, ifaceConfig.Type)
+		debug.Log(debug.DEBUG_ERROR, "Configuring interface", "name", name, "type", ifaceConfig.Type)
 		r.interfaces = append(r.interfaces, iface)
-		debugLog(3, "Interface %s started successfully", name)
+		debug.Log(debug.DEBUG_INFO, "Interface started successfully", "name", name)
 	}
 
 	return r, nil
 }
 
 func (r *Reticulum) handleInterface(iface common.NetworkInterface) {
-	debugLog(DEBUG_INFO, "Setting up interface %s (type=%T)", iface.GetName(), iface)
+	debug.Log(debug.DEBUG_INFO, "Setting up interface", "name", iface.GetName(), "type", fmt.Sprintf("%T", iface))
 
 	ch := channel.NewChannel(&transportWrapper{r.transport})
 	r.channels[iface.GetName()] = ch
@@ -216,11 +202,11 @@ func (r *Reticulum) handleInterface(iface common.NetworkInterface) {
 		ch,
 		func(size int) {
 			data := make([]byte, size)
-			debugLog(DEBUG_PACKETS, "Interface %s: Reading %d bytes from buffer", iface.GetName(), size)
+			debug.Log(debug.DEBUG_PACKETS, "Interface reading bytes from buffer", "name", iface.GetName(), "size", size)
 			iface.ProcessIncoming(data)
 
 			if len(data) > 0 {
-				debugLog(DEBUG_TRACE, "Interface %s: Received packet type 0x%02x", iface.GetName(), data[0])
+				debug.Log(debug.DEBUG_TRACE, "Interface received packet type", "name", iface.GetName(), "type", fmt.Sprintf("0x%02x", data[0]))
 				r.transport.HandlePacket(data, iface)
 			}
 		},
@@ -251,7 +237,7 @@ func (r *Reticulum) monitorInterfaces() {
 					stats = fmt.Sprintf("%s, RTT: %v", stats, tcpClient.GetRTT())
 				}
 
-				debugLog(DEBUG_VERBOSE, "%s", stats)
+				debug.Log(debug.DEBUG_VERBOSE, "Interface status", "stats", stats)
 			}
 		}
 	}
@@ -259,16 +245,18 @@ func (r *Reticulum) monitorInterfaces() {
 
 func main() {
 	flag.Parse()
-	debugLog(1, "Initializing Reticulum (Debug Level: %d)...", *debugLevel)
+	debug.Init()
+	debug.Log(debug.DEBUG_CRITICAL, "Initializing Reticulum", "debug_level", debug.GetDebugLevel())
 
 	cfg, err := config.InitConfig()
 	if err != nil {
-		log.Fatalf("Failed to initialize config: %v", err)
+		debug.GetLogger().Error("Failed to initialize config", "error", err)
+		os.Exit(1)
 	}
-	debugLog(2, "Configuration loaded from: %s", cfg.ConfigPath)
+	debug.Log(debug.DEBUG_ERROR, "Configuration loaded", "path", cfg.ConfigPath)
 
 	if len(cfg.Interfaces) == 0 {
-		debugLog(2, "No interfaces configured, adding default interfaces")
+		debug.Log(debug.DEBUG_ERROR, "No interfaces configured, adding default interfaces")
 		cfg.Interfaces = make(map[string]*common.InterfaceConfig)
 
 		// Auto interface for local discovery
@@ -297,7 +285,8 @@ func main() {
 
 	r, err := NewReticulum(cfg)
 	if err != nil {
-		log.Fatalf("Failed to create Reticulum instance: %v", err)
+		debug.GetLogger().Error("Failed to create Reticulum instance", "error", err)
+		os.Exit(1)
 	}
 
 	// Start monitoring interfaces
@@ -309,18 +298,19 @@ func main() {
 
 	// Start Reticulum
 	if err := r.Start(); err != nil {
-		log.Fatalf("Failed to start Reticulum: %v", err)
+		debug.GetLogger().Error("Failed to start Reticulum", "error", err)
+		os.Exit(1)
 	}
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	<-sigChan
 
-	debugLog(1, "Shutting down...")
+	debug.Log(debug.DEBUG_CRITICAL, "Shutting down...")
 	if err := r.Stop(); err != nil {
-		debugLog(1, "Error during shutdown: %v", err)
+		debug.Log(debug.DEBUG_CRITICAL, "Error during shutdown", "error", err)
 	}
-	debugLog(1, "Goodbye!")
+	debug.Log(debug.DEBUG_CRITICAL, "Goodbye!")
 }
 
 type transportWrapper struct {
@@ -389,44 +379,44 @@ func initializeDirectories() error {
 }
 
 func (r *Reticulum) Start() error {
-	debugLog(2, "Starting Reticulum...")
+	debug.Log(debug.DEBUG_ERROR, "Starting Reticulum...")
 
 	if err := r.transport.Start(); err != nil {
 		return fmt.Errorf("failed to start transport: %v", err)
 	}
-	debugLog(3, "Transport started successfully")
+	debug.Log(debug.DEBUG_INFO, "Transport started successfully")
 
 	// Start interfaces
 	for _, iface := range r.interfaces {
-		debugLog(2, "Starting interface %s...", iface.GetName())
+		debug.Log(debug.DEBUG_ERROR, "Starting interface", "name", iface.GetName())
 		if err := iface.Start(); err != nil {
 			if r.config.PanicOnInterfaceErr {
 				return fmt.Errorf("failed to start interface %s: %v", iface.GetName(), err)
 			}
-			debugLog(1, "Error starting interface %s: %v", iface.GetName(), err)
+			debug.Log(debug.DEBUG_CRITICAL, "Error starting interface", "name", iface.GetName(), "error", err)
 			continue
 		}
 
 		if netIface, ok := iface.(common.NetworkInterface); ok {
 			// Register interface with transport
 			if err := r.transport.RegisterInterface(iface.GetName(), netIface); err != nil {
-				debugLog(1, "Failed to register interface %s with transport: %v", iface.GetName(), err)
+				debug.Log(debug.DEBUG_CRITICAL, "Failed to register interface with transport", "name", iface.GetName(), "error", err)
 			} else {
-				debugLog(3, "Registered interface %s with transport", iface.GetName())
+				debug.Log(debug.DEBUG_INFO, "Registered interface with transport", "name", iface.GetName())
 			}
 			r.handleInterface(netIface)
 		}
-		debugLog(3, "Interface %s started successfully", iface.GetName())
+		debug.Log(debug.DEBUG_INFO, "Interface started successfully", "name", iface.GetName())
 	}
 
 	// Wait for interfaces to initialize
 	time.Sleep(2 * time.Second)
 
 	// Send initial announce
-	debugLog(2, "Sending initial announce")
+	debug.Log(debug.DEBUG_ERROR, "Sending initial announce")
 	nodeName := "Go-Client"
 	if err := r.destination.Announce([]byte(nodeName)); err != nil {
-		debugLog(1, "Failed to send initial announce: %v", err)
+		debug.Log(debug.DEBUG_CRITICAL, "Failed to send initial announce", "error", err)
 	}
 
 	// Start periodic announce goroutine
@@ -435,10 +425,10 @@ func (r *Reticulum) Start() error {
 		time.Sleep(5 * time.Second)
 
 		for {
-			debugLog(3, "Announcing destination...")
+			debug.Log(debug.DEBUG_INFO, "Announcing destination...")
 			err := r.destination.Announce([]byte(nodeName))
 			if err != nil {
-				debugLog(1, "Could not send announce: %v", err)
+				debug.Log(debug.DEBUG_CRITICAL, "Could not send announce", "error", err)
 			}
 
 			time.Sleep(60 * time.Second)
@@ -447,28 +437,28 @@ func (r *Reticulum) Start() error {
 
 	go r.monitorInterfaces()
 
-	debugLog(2, "Reticulum started successfully")
+	debug.Log(debug.DEBUG_ERROR, "Reticulum started successfully")
 	return nil
 }
 
 func (r *Reticulum) Stop() error {
-	debugLog(2, "Stopping Reticulum...")
+	debug.Log(debug.DEBUG_ERROR, "Stopping Reticulum...")
 
 	for _, buf := range r.buffers {
 		if err := buf.Close(); err != nil {
-			debugLog(1, "Error closing buffer: %v", err)
+			debug.Log(debug.DEBUG_CRITICAL, "Error closing buffer", "error", err)
 		}
 	}
 
 	for _, ch := range r.channels {
 		if err := ch.Close(); err != nil {
-			debugLog(1, "Error closing channel: %v", err)
+			debug.Log(debug.DEBUG_CRITICAL, "Error closing channel", "error", err)
 		}
 	}
 
 	for _, iface := range r.interfaces {
 		if err := iface.Stop(); err != nil {
-			debugLog(1, "Error stopping interface %s: %v", iface.GetName(), err)
+			debug.Log(debug.DEBUG_CRITICAL, "Error stopping interface", "name", iface.GetName(), "error", err)
 		}
 	}
 
@@ -476,7 +466,7 @@ func (r *Reticulum) Stop() error {
 		return fmt.Errorf("failed to close transport: %v", err)
 	}
 
-	debugLog(2, "Reticulum stopped successfully")
+	debug.Log(debug.DEBUG_ERROR, "Reticulum stopped successfully")
 	return nil
 }
 
@@ -497,9 +487,9 @@ func (h *AnnounceHandler) AspectFilter() []string {
 }
 
 func (h *AnnounceHandler) ReceivedAnnounce(destHash []byte, id interface{}, appData []byte) error {
-	debugLog(DEBUG_INFO, "Received announce from %x", destHash)
-	debugLog(DEBUG_PACKETS, "Raw announce data: %x", appData)
-	log.Printf("[DEBUG-3] MAIN HANDLER: Received announce from %x, appData len: %d", destHash, len(appData))
+	debug.Log(debug.DEBUG_INFO, "Received announce", "hash", fmt.Sprintf("%x", destHash))
+	debug.Log(debug.DEBUG_PACKETS, "Raw announce data", "data", fmt.Sprintf("%x", appData))
+	debug.Log(debug.DEBUG_INFO, "MAIN HANDLER: Received announce", "hash", fmt.Sprintf("%x", destHash), "appData_len", len(appData))
 
 	var isNode bool
 	var nodeEnabled bool
@@ -520,35 +510,35 @@ func (h *AnnounceHandler) ReceivedAnnounce(destHash []byte, id interface{}, appD
 					if pos+2+dataLen <= len(appData) {
 						customData := appData[pos+2 : pos+2+dataLen]
 						nodeName := string(customData)
-						log.Printf("[DEBUG-3] Parsed node name: %s", nodeName)
-						debugLog(DEBUG_INFO, "Announced node: %s", nodeName)
+						debug.Log(debug.DEBUG_INFO, "Parsed node name", "name", nodeName)
+						debug.Log(debug.DEBUG_INFO, "Announced node", "name", nodeName)
 					}
 				}
 			}
 		} else {
 			// Fallback: treat as raw node name
 			nodeName := string(appData)
-			log.Printf("[DEBUG-3] Raw node name: %s", nodeName)
-			debugLog(DEBUG_INFO, "Announced node: %s", nodeName)
+			debug.Log(debug.DEBUG_INFO, "Raw node name", "name", nodeName)
+			debug.Log(debug.DEBUG_INFO, "Announced node", "name", nodeName)
 		}
 	} else {
-		log.Printf("[DEBUG-3] No appData (empty announce)")
+		debug.Log(debug.DEBUG_INFO, "No appData (empty announce)")
 	}
 
 	// Type assert and log identity details
 	if identity, ok := id.(*identity.Identity); ok {
-		debugLog(DEBUG_ALL, "Identity details:")
-		debugLog(DEBUG_ALL, "  Hash: %s", identity.GetHexHash())
-		debugLog(DEBUG_ALL, "  Public Key: %x", identity.GetPublicKey())
+		debug.Log(debug.DEBUG_ALL, "Identity details")
+		debug.Log(debug.DEBUG_ALL, "Identity hash", "hash", identity.GetHexHash())
+		debug.Log(debug.DEBUG_ALL, "Identity public key", "key", fmt.Sprintf("%x", identity.GetPublicKey()))
 
 		ratchets := identity.GetRatchets()
-		debugLog(DEBUG_ALL, "  Active Ratchets: %d", len(ratchets))
+		debug.Log(debug.DEBUG_ALL, "Active ratchets", "count", len(ratchets))
 
 		if len(ratchets) > 0 {
 			ratchetKey := identity.GetCurrentRatchetKey()
 			if ratchetKey != nil {
 				ratchetID := identity.GetRatchetID(ratchetKey)
-				debugLog(DEBUG_ALL, "  Current Ratchet ID: %x", ratchetID)
+				debug.Log(debug.DEBUG_ALL, "Current ratchet ID", "id", fmt.Sprintf("%x", ratchetID))
 			}
 		}
 
@@ -556,8 +546,7 @@ func (h *AnnounceHandler) ReceivedAnnounce(destHash []byte, id interface{}, appD
 		recordType := "peer"
 		if isNode {
 			recordType = "node"
-			debugLog(DEBUG_INFO, "Storing node in announce history: enabled=%v, timestamp=%d, maxsize=%dKB",
-				nodeEnabled, nodeTimestamp, nodeMaxSize)
+			debug.Log(debug.DEBUG_INFO, "Storing node in announce history", "enabled", nodeEnabled, "timestamp", nodeTimestamp, "maxsize", fmt.Sprintf("%dKB", nodeMaxSize))
 		}
 
 		h.reticulum.announceHistoryMu.Lock()
@@ -567,7 +556,7 @@ func (h *AnnounceHandler) ReceivedAnnounce(destHash []byte, id interface{}, appD
 		}
 		h.reticulum.announceHistoryMu.Unlock()
 
-		debugLog(DEBUG_VERBOSE, "Stored %s announce in history for identity %s", recordType, identity.GetHexHash())
+		debug.Log(debug.DEBUG_VERBOSE, "Stored announce in history", "type", recordType, "identity", identity.GetHexHash())
 	}
 
 	return nil
@@ -607,7 +596,6 @@ func (r *Reticulum) createNodeAppData() []byte {
 	binary.BigEndian.PutUint16(sizeBytes, uint16(r.maxTransferSize)) // #nosec G115
 	appData = append(appData, sizeBytes...)
 
-	log.Printf("[DEBUG-7] Created node appData (msgpack [enable=%v, timestamp=%d, maxsize=%d]): %x",
-		r.nodeEnabled, r.nodeTimestamp, r.maxTransferSize, appData)
+	debug.Log(debug.DEBUG_ALL, "Created node appData", "enable", r.nodeEnabled, "timestamp", r.nodeTimestamp, "maxsize", r.maxTransferSize, "data", fmt.Sprintf("%x", appData))
 	return appData
 }
