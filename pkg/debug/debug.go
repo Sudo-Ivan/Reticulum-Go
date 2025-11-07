@@ -2,7 +2,6 @@ package debug
 
 import (
 	"flag"
-	"fmt"
 	"log/slog"
 	"os"
 )
@@ -96,7 +95,8 @@ func Log(level int, msg string, args ...interface{}) {
 		return
 	}
 
-	logger.Log(nil, slogLevel, fmt.Sprintf(msg, args...), "debug_level", level)
+	allArgs := append(args, "debug_level", level)
+	logger.Log(nil, slogLevel, msg, allArgs...)
 }
 
 func SetDebugLevel(level int) {
