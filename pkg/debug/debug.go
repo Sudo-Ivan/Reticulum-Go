@@ -92,7 +92,7 @@ func Log(level int, msg string, args ...interface{}) {
 		slogLevel = slog.LevelError
 	}
 
-	if !logger.Enabled(nil, slogLevel) {
+	if !logger.Enabled(context.TODO(), slogLevel) {
 		return
 	}
 
