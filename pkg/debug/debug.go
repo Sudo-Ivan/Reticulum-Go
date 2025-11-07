@@ -1,6 +1,7 @@
 package debug
 
 import (
+	"context"
 	"flag"
 	"log/slog"
 	"os"
@@ -95,8 +96,11 @@ func Log(level int, msg string, args ...interface{}) {
 		return
 	}
 
-	allArgs := append(args, "debug_level", level)
-	logger.Log(nil, slogLevel, msg, allArgs...)
+	allArgs := make([]interface{}, len(args)+2)
+	copy(allArgs, args)
+	allArgs[len(args)] = "debug_level"
+	allArgs[len(args)+1] = level
+	logger.Log(context.TODO(), slogLevel, msg, allArgs...)
 }
 
 func SetDebugLevel(level int) {
