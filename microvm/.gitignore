@@ -1,0 +1,5 @@
+firecracker-config.json
+rootfs.ext4
+vmlinux.bin
+reticulum-go
+vsock.sock
