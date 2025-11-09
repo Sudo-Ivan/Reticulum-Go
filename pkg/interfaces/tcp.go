@@ -333,7 +333,7 @@ func (tc *TCPClientInterface) reconnect() {
 
 		// Log reconnection attempt
 		fmt.Printf("Failed to reconnect to %s (attempt %d/%d): %v\n",
-			addr, retries+1, tc.maxReconnectTries, err)
+			net.JoinHostPort(tc.targetAddr, fmt.Sprintf("%d", tc.targetPort)), retries+1, tc.maxReconnectTries, err)
 
 		// Wait with exponential backoff
 		time.Sleep(backoff)
@@ -354,7 +354,7 @@ func (tc *TCPClientInterface) reconnect() {
 	// If we've exhausted all retries, perform final teardown
 	tc.teardown()
 	fmt.Printf("Failed to reconnect to %s after %d attempts\n",
-		fmt.Sprintf("%s:%d", tc.targetAddr, tc.targetPort), tc.maxReconnectTries)
+		net.JoinHostPort(tc.targetAddr, fmt.Sprintf("%d", tc.targetPort)), tc.maxReconnectTries)
 }
 
 func (tc *TCPClientInterface) Enable() {
@@ -562,7 +562,7 @@ func (ts *TCPServerInterface) Start() error {
 	ts.mutex.Lock()
 	defer ts.mutex.Unlock()
 
-	addr := fmt.Sprintf("%s:%d", ts.bindAddr, ts.bindPort)
+	addr := net.JoinHostPort(ts.bindAddr, fmt.Sprintf("%d", ts.bindPort))
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("failed to start TCP server: %w", err)
