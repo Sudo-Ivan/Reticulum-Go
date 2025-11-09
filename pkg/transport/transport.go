@@ -1318,13 +1318,11 @@ func CreateAnnouncePacket(destHash []byte, identity *identity.Identity, appData 
 	appDataMsg := []byte{0x92} // array of 2 elements
 
 	// Add name as first element
-	appDataMsg = append(appDataMsg, 0xc4)                 // bin 8 format
-	appDataMsg = append(appDataMsg, byte(len(nameBytes))) // length
+	appDataMsg = append(appDataMsg, 0xc4, byte(len(nameBytes)))
 	appDataMsg = append(appDataMsg, nameBytes...)
 
 	// Add app data as second element
-	appDataMsg = append(appDataMsg, 0xc4)               // bin 8 format
-	appDataMsg = append(appDataMsg, byte(len(appData))) // length
+	appDataMsg = append(appDataMsg, 0xc4, byte(len(appData)))
 	appDataMsg = append(appDataMsg, appData...)
 
 	// Create signature over destination hash and app data
