@@ -2,11 +2,11 @@ package interfaces
 
 import (
 	"fmt"
-	"log"
 	"net"
 	"sync"
 
 	"github.com/Sudo-Ivan/reticulum-go/pkg/common"
+	"github.com/Sudo-Ivan/reticulum-go/pkg/debug"
 )
 
 type UDPInterface struct {
@@ -76,7 +76,7 @@ func (ui *UDPInterface) Detach() {
 }
 
 func (ui *UDPInterface) Send(data []byte, addr string) error {
-	log.Printf("[DEBUG-7] UDP interface %s: Sending %d bytes", ui.Name, len(data))
+	debug.Log(debug.DEBUG_ALL, "UDP interface sending bytes", "name", ui.Name, "bytes", len(data))
 
 	if !ui.IsEnabled() {
 		return fmt.Errorf("interface not enabled")
@@ -93,9 +93,9 @@ func (ui *UDPInterface) Send(data []byte, addr string) error {
 
 	_, err := ui.conn.WriteTo(data, ui.targetAddr)
 	if err != nil {
-		log.Printf("[DEBUG-1] UDP interface %s: Write failed: %v", ui.Name, err)
+		debug.Log(debug.DEBUG_CRITICAL, "UDP interface write failed", "name", ui.Name, "error", err)
 	} else {
-		log.Printf("[DEBUG-7] UDP interface %s: Sent %d bytes successfully", ui.Name, len(data))
+		debug.Log(debug.DEBUG_ALL, "UDP interface sent bytes successfully", "name", ui.Name, "bytes", len(data))
 	}
 	return err
 }
@@ -195,14 +195,14 @@ func (ui *UDPInterface) readLoop() {
 		n, remoteAddr, err := ui.conn.ReadFromUDP(buffer)
 		if err != nil {
 			if ui.IsOnline() {
-				log.Printf("Error reading from UDP interface %s: %v", ui.Name, err)
+				debug.Log(debug.DEBUG_ERROR, "Error reading from UDP interface", "name", ui.Name, "error", err)
 			}
 			return
 		}
 
 		ui.mutex.Lock()
 		if ui.targetAddr == nil {
-			log.Printf("[DEBUG-7] UDP interface %s discovered peer %s", ui.Name, remoteAddr)
+			debug.Log(debug.DEBUG_ALL, "UDP interface discovered peer", "name", ui.Name, "peer", remoteAddr.String())
 			ui.targetAddr = remoteAddr
 		}
 		ui.mutex.Unlock()
@@ -212,25 +212,6 @@ func (ui *UDPInterface) readLoop() {
 		}
 	}
 }
-
-/*
-func (ui *UDPInterface) readLoop() {
-	buffer := make([]byte, ui.MTU)
-	for {
-		n, _, err := ui.conn.ReadFromUDP(buffer)
-		if err != nil {
-			if ui.Online {
-				log.Printf("Error reading from UDP interface %s: %v", ui.Name, err)
-				ui.Stop() // Consider if stopping is the right action or just log and continue
-			}
-			return
-		}
-		if ui.packetCallback != nil {
-			ui.packetCallback(buffer[:n], ui)
-		}
-	}
-}
-*/
 
 func (ui *UDPInterface) IsEnabled() bool {
 	ui.mutex.RLock()

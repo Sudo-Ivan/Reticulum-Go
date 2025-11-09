@@ -4,11 +4,11 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
-	"log"
 	"sync"
 
 	"github.com/Sudo-Ivan/reticulum-go/pkg/announce"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/common"
+	"github.com/Sudo-Ivan/reticulum-go/pkg/debug"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/identity"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/transport"
 )
@@ -36,15 +36,6 @@ const (
 
 	RATCHET_COUNT    = 512  // Default number of retained ratchet keys
 	RATCHET_INTERVAL = 1800 // Minimum interval between ratchet rotations in seconds
-
-	// Debug levels
-	DEBUG_CRITICAL = 1 // Critical errors
-	DEBUG_ERROR    = 2 // Non-critical errors
-	DEBUG_INFO     = 3 // Important information
-	DEBUG_VERBOSE  = 4 // Detailed information
-	DEBUG_TRACE    = 5 // Very detailed tracing
-	DEBUG_PACKETS  = 6 // Packet-level details
-	DEBUG_ALL      = 7 // Everything
 )
 
 type PacketCallback = common.PacketCallback
@@ -86,15 +77,11 @@ type Destination struct {
 	requestHandlers map[string]*RequestHandler
 }
 
-func debugLog(level int, format string, v ...interface{}) {
-	log.Printf("[DEBUG-%d] %s", level, fmt.Sprintf(format, v...))
-}
-
 func New(id *identity.Identity, direction byte, destType byte, appName string, transport *transport.Transport, aspects ...string) (*Destination, error) {
-	debugLog(DEBUG_INFO, "Creating new destination: app=%s type=%d direction=%d", appName, destType, direction)
+	debug.Log(debug.DEBUG_INFO, "Creating new destination", "app", appName, "type", destType, "direction", direction)
 
 	if id == nil {
-		debugLog(DEBUG_ERROR, "Cannot create destination: identity is nil")
+		debug.Log(debug.DEBUG_ERROR, "Cannot create destination: identity is nil")
 		return nil, errors.New("identity cannot be nil")
 	}
 
@@ -114,7 +101,7 @@ func New(id *identity.Identity, direction byte, destType byte, appName string, t
 
 	// Generate destination hash
 	d.hashValue = d.calculateHash()
-	debugLog(DEBUG_VERBOSE, "Created destination with hash: %x", d.hashValue)
+	debug.Log(debug.DEBUG_VERBOSE, "Created destination with hash", "hash", fmt.Sprintf("%x", d.hashValue))
 
 	return d, nil
 }
@@ -122,10 +109,10 @@ func New(id *identity.Identity, direction byte, destType byte, appName string, t
 // FromHash creates a destination from a known hash (e.g., from an announce).
 // This is used by clients to create destination objects for servers they've discovered.
 func FromHash(hash []byte, id *identity.Identity, destType byte, transport *transport.Transport) (*Destination, error) {
-	debugLog(DEBUG_INFO, "Creating destination from hash: %x", hash)
+	debug.Log(debug.DEBUG_INFO, "Creating destination from hash", "hash", fmt.Sprintf("%x", hash))
 
 	if id == nil {
-		debugLog(DEBUG_ERROR, "Cannot create destination: identity is nil")
+		debug.Log(debug.DEBUG_ERROR, "Cannot create destination: identity is nil")
 		return nil, errors.New("identity cannot be nil")
 	}
 
@@ -142,12 +129,12 @@ func FromHash(hash []byte, id *identity.Identity, destType byte, transport *tran
 		requestHandlers: make(map[string]*RequestHandler),
 	}
 
-	debugLog(DEBUG_VERBOSE, "Created destination from hash: %x", hash)
+	debug.Log(debug.DEBUG_VERBOSE, "Created destination from hash", "hash", fmt.Sprintf("%x", hash))
 	return d, nil
 }
 
 func (d *Destination) calculateHash() []byte {
-	debugLog(DEBUG_TRACE, "Calculating hash for destination %s", d.ExpandName())
+	debug.Log(debug.DEBUG_TRACE, "Calculating hash for destination", "name", d.ExpandName())
 
 	// destination_hash = SHA256(name_hash_10bytes + identity_hash_16bytes)[:16]
 	// Identity hash is the truncated hash of the public key (16 bytes)
@@ -157,8 +144,8 @@ func (d *Destination) calculateHash() []byte {
 	nameHashFull := sha256.Sum256([]byte(d.ExpandName()))
 	nameHash10 := nameHashFull[:10]  // Only use 10 bytes
 
-	debugLog(DEBUG_ALL, "Identity hash: %x", identityHash)
-	debugLog(DEBUG_ALL, "Name hash (10 bytes): %x", nameHash10)
+	debug.Log(debug.DEBUG_ALL, "Identity hash", "hash", fmt.Sprintf("%x", identityHash))
+	debug.Log(debug.DEBUG_ALL, "Name hash (10 bytes)", "hash", fmt.Sprintf("%x", nameHash10))
 
 	// Concatenate name_hash (10 bytes) + identity_hash (16 bytes) = 26 bytes
 	combined := append(nameHash10, identityHash...)
@@ -167,7 +154,7 @@ func (d *Destination) calculateHash() []byte {
 	finalHashFull := sha256.Sum256(combined)
 	finalHash := finalHashFull[:16]
 
-	debugLog(DEBUG_VERBOSE, "Calculated destination hash: %x", finalHash)
+	debug.Log(debug.DEBUG_VERBOSE, "Calculated destination hash", "hash", fmt.Sprintf("%x", finalHash))
 
 	return finalHash
 }
@@ -184,7 +171,7 @@ func (d *Destination) Announce(appData []byte) error {
 	d.mutex.Lock()
 	defer d.mutex.Unlock()
 
-	log.Printf("[DEBUG-4] Announcing destination %s", d.ExpandName())
+	debug.Log(debug.DEBUG_VERBOSE, "Announcing destination", "name", d.ExpandName())
 
 	if appData == nil {
 		appData = d.defaultAppData
@@ -203,27 +190,27 @@ func (d *Destination) Announce(appData []byte) error {
 	}
 
 	// Send announce packet to all interfaces
-	log.Printf("[DEBUG-4] Sending announce packet to all interfaces")
+	debug.Log(debug.DEBUG_VERBOSE, "Sending announce packet to all interfaces")
 	if d.transport == nil {
 		return errors.New("transport not initialized")
 	}
 
 	interfaces := d.transport.GetInterfaces()
-	log.Printf("[DEBUG-7] Got %d interfaces from transport", len(interfaces))
+	debug.Log(debug.DEBUG_ALL, "Got interfaces from transport", "count", len(interfaces))
 
 	var lastErr error
 	for name, iface := range interfaces {
-		log.Printf("[DEBUG-7] Checking interface %s: enabled=%v, online=%v", name, iface.IsEnabled(), iface.IsOnline())
+		debug.Log(debug.DEBUG_ALL, "Checking interface", "name", name, "enabled", iface.IsEnabled(), "online", iface.IsOnline())
 		if iface.IsEnabled() && iface.IsOnline() {
-			log.Printf("[DEBUG-7] Sending announce to interface %s (%d bytes)", name, len(packet))
+			debug.Log(debug.DEBUG_ALL, "Sending announce to interface", "name", name, "bytes", len(packet))
 			if err := iface.Send(packet, ""); err != nil {
-				log.Printf("[ERROR] Failed to send announce on interface %s: %v", name, err)
+				debug.Log(debug.DEBUG_ERROR, "Failed to send announce on interface", "name", name, "error", err)
 				lastErr = err
 			} else {
-				log.Printf("[DEBUG-7] Successfully sent announce to interface %s", name)
+				debug.Log(debug.DEBUG_ALL, "Successfully sent announce to interface", "name", name)
 			}
 		} else {
-			log.Printf("[DEBUG-7] Skipping interface %s (not enabled or not online)", name)
+			debug.Log(debug.DEBUG_ALL, "Skipping interface", "name", name, "reason", "not enabled or not online")
 		}
 	}
 
@@ -238,7 +225,7 @@ func (d *Destination) AcceptsLinks(accepts bool) {
 	// Register with transport if accepting links
 	if accepts && d.transport != nil {
 		d.transport.RegisterDestination(d.hashValue, d)
-		debugLog(DEBUG_VERBOSE, "Destination %x registered with transport for link requests", d.hashValue)
+		debug.Log(debug.DEBUG_VERBOSE, "Destination registered with transport for link requests", "hash", fmt.Sprintf("%x", d.hashValue))
 	}
 }
 
@@ -255,19 +242,19 @@ func (d *Destination) GetLinkCallback() common.LinkEstablishedCallback {
 }
 
 func (d *Destination) HandleIncomingLinkRequest(linkID []byte, transport interface{}, networkIface common.NetworkInterface) error {
-	debugLog(DEBUG_INFO, "Handling incoming link request for destination %x", d.GetHash())
+	debug.Log(debug.DEBUG_INFO, "Handling incoming link request for destination", "hash", fmt.Sprintf("%x", d.GetHash()))
 	
 	// Import link package here to avoid circular dependency at package level
 	// We'll use dynamic import by having the caller create the link
 	// For now, just call the callback with a placeholder
 	
 	if d.linkCallback != nil {
-		debugLog(DEBUG_INFO, "Calling link established callback")
+		debug.Log(debug.DEBUG_INFO, "Calling link established callback")
 		// Pass linkID as the link object for now
 		// The callback will need to handle creating the actual link
 		d.linkCallback(linkID)
 	} else {
-		debugLog(DEBUG_VERBOSE, "No link callback set")
+		debug.Log(debug.DEBUG_VERBOSE, "No link callback set")
 	}
 	
 	return nil
@@ -379,32 +366,32 @@ func (d *Destination) DeregisterRequestHandler(path string) bool {
 
 func (d *Destination) Encrypt(plaintext []byte) ([]byte, error) {
 	if d.destType == PLAIN {
-		log.Printf("[DEBUG-4] Using plaintext transmission for PLAIN destination")
+		debug.Log(debug.DEBUG_VERBOSE, "Using plaintext transmission for PLAIN destination")
 		return plaintext, nil
 	}
 
 	if d.identity == nil {
-		log.Printf("[DEBUG-3] Cannot encrypt: no identity available")
+		debug.Log(debug.DEBUG_INFO, "Cannot encrypt: no identity available")
 		return nil, errors.New("no identity available for encryption")
 	}
 
-	log.Printf("[DEBUG-4] Encrypting %d bytes for destination type %d", len(plaintext), d.destType)
+	debug.Log(debug.DEBUG_VERBOSE, "Encrypting bytes for destination", "bytes", len(plaintext), "destType", d.destType)
 
 	switch d.destType {
 	case SINGLE:
 		recipientKey := d.identity.GetPublicKey()
-		log.Printf("[DEBUG-4] Encrypting for single recipient with key %x", recipientKey[:8])
+		debug.Log(debug.DEBUG_VERBOSE, "Encrypting for single recipient", "key", fmt.Sprintf("%x", recipientKey[:8]))
 		return d.identity.Encrypt(plaintext, recipientKey)
 	case GROUP:
 		key := d.identity.GetCurrentRatchetKey()
 		if key == nil {
-			log.Printf("[DEBUG-3] Cannot encrypt: no ratchet key available")
+			debug.Log(debug.DEBUG_INFO, "Cannot encrypt: no ratchet key available")
 			return nil, errors.New("no ratchet key available")
 		}
-		log.Printf("[DEBUG-4] Encrypting for group with ratchet key %x", key[:8])
+		debug.Log(debug.DEBUG_VERBOSE, "Encrypting for group with ratchet key", "key", fmt.Sprintf("%x", key[:8]))
 		return d.identity.EncryptWithHMAC(plaintext, key)
 	default:
-		log.Printf("[DEBUG-3] Unsupported destination type %d for encryption", d.destType)
+		debug.Log(debug.DEBUG_INFO, "Unsupported destination type for encryption", "destType", d.destType)
 		return nil, errors.New("unsupported destination type for encryption")
 	}
 }

@@ -12,13 +12,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"sync"
 	"time"
 
 	"github.com/Sudo-Ivan/reticulum-go/pkg/common"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/cryptography"
+	"github.com/Sudo-Ivan/reticulum-go/pkg/debug"
 	"golang.org/x/crypto/curve25519"
 	"golang.org/x/crypto/hkdf"
 )
@@ -173,7 +173,7 @@ func GetRandomHash() []byte {
 	randomData := make([]byte, TRUNCATED_HASHLENGTH/8)
 	_, err := rand.Read(randomData) // #nosec G104
 	if err != nil {
-		log.Printf("[DEBUG-1] Failed to read random data for hash: %v", err)
+		debug.Log(debug.DEBUG_CRITICAL, "Failed to read random data for hash", "error", err)
 		return nil // Or handle the error appropriately
 	}
 	return TruncatedHash(randomData)
@@ -279,13 +279,13 @@ func (i *Identity) GetCurrentRatchetKey() []byte {
 	if len(i.ratchets) == 0 {
 		// If no ratchets exist, generate one.
 		// This should ideally be handled by an explicit setup process.
-		log.Println("[DEBUG-5] No ratchets found, generating a new one on-the-fly.")
+		debug.Log(debug.DEBUG_TRACE, "No ratchets found, generating a new one on-the-fly")
 		// Temporarily unlock to call RotateRatchet, which locks internally.
 		i.mutex.RUnlock()
 		newRatchet, err := i.RotateRatchet()
 		i.mutex.RLock()
 		if err != nil {
-			log.Printf("[DEBUG-1] Failed to generate initial ratchet key: %v", err)
+			debug.Log(debug.DEBUG_CRITICAL, "Failed to generate initial ratchet key", "error", err)
 			return nil
 		}
 		return newRatchet
@@ -302,7 +302,7 @@ func (i *Identity) GetCurrentRatchetKey() []byte {
 	}
 
 	if latestKey == nil {
-		log.Printf("[DEBUG-2] Could not determine the latest ratchet key from %d ratchets.", len(i.ratchets))
+		debug.Log(debug.DEBUG_ERROR, "Could not determine the latest ratchet key", "ratchet_count", len(i.ratchets))
 	}
 
 	return latestKey
@@ -310,13 +310,13 @@ func (i *Identity) GetCurrentRatchetKey() []byte {
 
 func (i *Identity) Decrypt(ciphertextToken []byte, ratchets [][]byte, enforceRatchets bool, ratchetIDReceiver *common.RatchetIDReceiver) ([]byte, error) {
 	if i.privateKey == nil {
-		log.Printf("[DEBUG-1] Decryption failed: identity has no private key")
+		debug.Log(debug.DEBUG_CRITICAL, "Decryption failed: identity has no private key")
 		return nil, errors.New("decryption failed because identity does not hold a private key")
 	}
 
-	log.Printf("[DEBUG-7] Starting decryption for identity %s", i.GetHexHash())
+	debug.Log(debug.DEBUG_ALL, "Starting decryption for identity", "hash", i.GetHexHash())
 	if len(ratchets) > 0 {
-		log.Printf("[DEBUG-7] Attempting decryption with %d ratchets", len(ratchets))
+		debug.Log(debug.DEBUG_ALL, "Attempting decryption with ratchets", "count", len(ratchets))
 	}
 
 	if len(ciphertextToken) <= KEYSIZE/8/2 {
@@ -407,7 +407,7 @@ func (i *Identity) Decrypt(ciphertextToken []byte, ratchets [][]byte, enforceRat
 		ratchetIDReceiver.LatestRatchetID = nil
 	}
 
-	log.Printf("[DEBUG-7] Decryption completed successfully")
+	debug.Log(debug.DEBUG_ALL, "Decryption completed successfully")
 	return plaintext[:len(plaintext)-padding], nil
 }
 
@@ -419,7 +419,7 @@ func (i *Identity) tryRatchetDecryption(peerPubBytes, ciphertext, ratchet []byte
 	// Get ratchet ID
 	ratchetPubBytes, err := curve25519.X25519(ratchetPriv, cryptography.GetBasepoint())
 	if err != nil {
-		log.Printf("[DEBUG-7] Failed to generate ratchet public key: %v", err)
+		debug.Log(debug.DEBUG_ALL, "Failed to generate ratchet public key", "error", err)
 		return nil, nil, err
 	}
 	ratchetID := i.GetRatchetID(ratchetPubBytes)
@@ -469,12 +469,12 @@ func (i *Identity) DecryptWithHMAC(data []byte, key []byte) ([]byte, error) {
 }
 
 func (i *Identity) ToFile(path string) error {
-	log.Printf("[DEBUG-7] Saving identity %s to file: %s", i.GetHexHash(), path)
+	debug.Log(debug.DEBUG_ALL, "Saving identity to file", "hash", i.GetHexHash(), "path", path)
 
 	// Persist ratchets to a separate file
 	ratchetPath := path + ".ratchets"
 	if err := i.saveRatchets(ratchetPath); err != nil {
-		log.Printf("[DEBUG-1] Failed to save ratchets: %v", err)
+		debug.Log(debug.DEBUG_CRITICAL, "Failed to save ratchets", "error", err)
 		// Continue saving the main identity file even if ratchets fail
 	}
 
@@ -488,17 +488,17 @@ func (i *Identity) ToFile(path string) error {
 
 	file, err := os.Create(path) // #nosec G304
 	if err != nil {
-		log.Printf("[DEBUG-1] Failed to create identity file: %v", err)
+		debug.Log(debug.DEBUG_CRITICAL, "Failed to create identity file", "error", err)
 		return err
 	}
 	defer file.Close()
 
 	if err := json.NewEncoder(file).Encode(data); err != nil {
-		log.Printf("[DEBUG-1] Failed to encode identity data: %v", err)
+		debug.Log(debug.DEBUG_CRITICAL, "Failed to encode identity data", "error", err)
 		return err
 	}
 
-	log.Printf("[DEBUG-7] Identity saved successfully")
+	debug.Log(debug.DEBUG_ALL, "Identity saved successfully")
 	return nil
 }
 
@@ -510,7 +510,7 @@ func (i *Identity) saveRatchets(path string) error {
 		return nil // Nothing to save
 	}
 
-	log.Printf("[DEBUG-6] Saving %d ratchets to %s", len(i.ratchets), path)
+	debug.Log(debug.DEBUG_PACKETS, "Saving ratchets", "count", len(i.ratchets), "path", path)
 	data := map[string]interface{}{
 		"ratchets":       i.ratchets,
 		"ratchet_expiry": i.ratchetExpiry,
@@ -526,18 +526,18 @@ func (i *Identity) saveRatchets(path string) error {
 }
 
 func RecallIdentity(path string) (*Identity, error) {
-	log.Printf("[DEBUG-7] Attempting to recall identity from: %s", path)
+	debug.Log(debug.DEBUG_ALL, "Attempting to recall identity", "path", path)
 
 	file, err := os.Open(path) // #nosec G304
 	if err != nil {
-		log.Printf("[DEBUG-1] Failed to open identity file: %v", err)
+		debug.Log(debug.DEBUG_CRITICAL, "Failed to open identity file", "error", err)
 		return nil, err
 	}
 	defer file.Close()
 
 	var data map[string]interface{}
 	if err := json.NewDecoder(file).Decode(&data); err != nil {
-		log.Printf("[DEBUG-1] Failed to decode identity data: %v", err)
+		debug.Log(debug.DEBUG_CRITICAL, "Failed to decode identity data", "error", err)
 		return nil, err
 	}
 
@@ -569,11 +569,11 @@ func RecallIdentity(path string) (*Identity, error) {
 	// Load ratchets if they exist
 	ratchetPath := path + ".ratchets"
 	if err := id.loadRatchets(ratchetPath); err != nil {
-		log.Printf("[DEBUG-2] Could not load ratchets for identity %s: %v", id.GetHexHash(), err)
+		debug.Log(debug.DEBUG_ERROR, "Could not load ratchets for identity", "hash", id.GetHexHash(), "error", err)
 		// This is not a fatal error, the identity can still function
 	}
 
-	log.Printf("[DEBUG-7] Successfully recalled identity with hash: %s", id.GetHexHash())
+	debug.Log(debug.DEBUG_ALL, "Successfully recalled identity", "hash", id.GetHexHash())
 	return id, nil
 }
 
@@ -584,7 +584,7 @@ func (i *Identity) loadRatchets(path string) error {
 	file, err := os.Open(path) // #nosec G304
 	if err != nil {
 		if os.IsNotExist(err) {
-			log.Printf("[DEBUG-6] No ratchet file found at %s, skipping.", path)
+			debug.Log(debug.DEBUG_PACKETS, "No ratchet file found, skipping", "path", path)
 			return nil
 		}
 		return fmt.Errorf("failed to open ratchet file: %w", err)
@@ -612,7 +612,7 @@ func (i *Identity) loadRatchets(path string) error {
 		}
 	}
 
-	log.Printf("[DEBUG-6] Loaded %d ratchets from %s", len(i.ratchets), path)
+	debug.Log(debug.DEBUG_PACKETS, "Loaded ratchets", "count", len(i.ratchets), "path", path)
 	return nil
 }
 
@@ -713,19 +713,19 @@ func (i *Identity) RotateRatchet() ([]byte, error) {
 	i.mutex.Lock()
 	defer i.mutex.Unlock()
 
-	log.Printf("[DEBUG-7] Rotating ratchet for identity %s", i.GetHexHash())
+	debug.Log(debug.DEBUG_ALL, "Rotating ratchet for identity", "hash", i.GetHexHash())
 
 	// Generate new ratchet key
 	newRatchet := make([]byte, RATCHETSIZE/8)
 	if _, err := io.ReadFull(rand.Reader, newRatchet); err != nil {
-		log.Printf("[DEBUG-1] Failed to generate new ratchet: %v", err)
+		debug.Log(debug.DEBUG_CRITICAL, "Failed to generate new ratchet", "error", err)
 		return nil, err
 	}
 
 	// Get public key for ratchet ID
 	ratchetPub, err := curve25519.X25519(newRatchet, curve25519.Basepoint)
 	if err != nil {
-		log.Printf("[DEBUG-1] Failed to generate ratchet public key: %v", err)
+		debug.Log(debug.DEBUG_CRITICAL, "Failed to generate ratchet public key", "error", err)
 		return nil, err
 	}
 
@@ -736,7 +736,7 @@ func (i *Identity) RotateRatchet() ([]byte, error) {
 	i.ratchets[string(ratchetID)] = newRatchet
 	i.ratchetExpiry[string(ratchetID)] = expiry
 
-	log.Printf("[DEBUG-7] New ratchet generated with ID: %x, expiry: %d", ratchetID, expiry)
+	debug.Log(debug.DEBUG_ALL, "New ratchet generated", "id", fmt.Sprintf("%x", ratchetID), "expiry", expiry)
 
 	// Cleanup old ratchets if we exceed max retained
 	if len(i.ratchets) > MAX_RETAINED_RATCHETS {
@@ -752,10 +752,10 @@ func (i *Identity) RotateRatchet() ([]byte, error) {
 
 		delete(i.ratchets, oldestID)
 		delete(i.ratchetExpiry, oldestID)
-		log.Printf("[DEBUG-7] Cleaned up oldest ratchet with ID: %x", []byte(oldestID))
+		debug.Log(debug.DEBUG_ALL, "Cleaned up oldest ratchet", "id", fmt.Sprintf("%x", []byte(oldestID)))
 	}
 
-	log.Printf("[DEBUG-7] Current number of active ratchets: %d", len(i.ratchets))
+	debug.Log(debug.DEBUG_ALL, "Current number of active ratchets", "count", len(i.ratchets))
 	return newRatchet, nil
 }
 
@@ -763,7 +763,7 @@ func (i *Identity) GetRatchets() [][]byte {
 	i.mutex.RLock()
 	defer i.mutex.RUnlock()
 
-	log.Printf("[DEBUG-7] Getting ratchets for identity %s", i.GetHexHash())
+	debug.Log(debug.DEBUG_ALL, "Getting ratchets for identity", "hash", i.GetHexHash())
 
 	ratchets := make([][]byte, 0, len(i.ratchets))
 	now := time.Now().Unix()
@@ -781,7 +781,7 @@ func (i *Identity) GetRatchets() [][]byte {
 		}
 	}
 
-	log.Printf("[DEBUG-7] Retrieved %d active ratchets, cleaned up %d expired", len(ratchets), expired)
+	debug.Log(debug.DEBUG_ALL, "Retrieved active ratchets", "active", len(ratchets), "expired", expired)
 	return ratchets
 }
 
@@ -789,7 +789,7 @@ func (i *Identity) CleanupExpiredRatchets() {
 	i.mutex.Lock()
 	defer i.mutex.Unlock()
 
-	log.Printf("[DEBUG-7] Starting ratchet cleanup for identity %s", i.GetHexHash())
+	debug.Log(debug.DEBUG_ALL, "Starting ratchet cleanup for identity", "hash", i.GetHexHash())
 
 	now := time.Now().Unix()
 	cleaned := 0
@@ -801,7 +801,7 @@ func (i *Identity) CleanupExpiredRatchets() {
 		}
 	}
 
-	log.Printf("[DEBUG-7] Cleaned up %d expired ratchets, %d remaining", cleaned, len(i.ratchets))
+	debug.Log(debug.DEBUG_ALL, "Cleaned up expired ratchets", "cleaned", cleaned, "remaining", len(i.ratchets))
 }
 
 // ValidateAnnounce validates an announce packet's signature

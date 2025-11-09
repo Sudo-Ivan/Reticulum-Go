@@ -2,13 +2,13 @@ package interfaces
 
 import (
 	"fmt"
-	"log"
 	"net"
 	"runtime"
 	"sync"
 	"time"
 
 	"github.com/Sudo-Ivan/reticulum-go/pkg/common"
+	"github.com/Sudo-Ivan/reticulum-go/pkg/debug"
 )
 
 const (
@@ -106,11 +106,11 @@ func (tc *TCPClientInterface) Start() error {
 	switch runtime.GOOS {
 	case "linux":
 		if err := tc.setTimeoutsLinux(); err != nil {
-			log.Printf("[DEBUG-2] Failed to set Linux TCP timeouts: %v", err)
+			debug.Log(debug.DEBUG_ERROR, "Failed to set Linux TCP timeouts", "error", err)
 		}
 	case "darwin":
 		if err := tc.setTimeoutsOSX(); err != nil {
-			log.Printf("[DEBUG-2] Failed to set OSX TCP timeouts: %v", err)
+			debug.Log(debug.DEBUG_ERROR, "Failed to set OSX TCP timeouts", "error", err)
 		}
 	}
 
@@ -169,7 +169,7 @@ func (tc *TCPClientInterface) readLoop() {
 
 func (tc *TCPClientInterface) handlePacket(data []byte) {
 	if len(data) < 1 {
-		log.Printf("[DEBUG-7] Received invalid packet: empty")
+		debug.Log(debug.DEBUG_ALL, "Received invalid packet: empty")
 		return
 	}
 
@@ -179,20 +179,20 @@ func (tc *TCPClientInterface) handlePacket(data []byte) {
 	tc.lastRx = lastRx
 	tc.mutex.Unlock()
 
-	log.Printf("[DEBUG-7] Received packet: type=0x%02x, size=%d bytes", data[0], len(data))
+	debug.Log(debug.DEBUG_ALL, "Received packet", "type", fmt.Sprintf("0x%02x", data[0]), "size", len(data))
 
 	// For RNS packets, call the packet callback directly
 	if callback := tc.GetPacketCallback(); callback != nil {
-		log.Printf("[DEBUG-7] Calling packet callback for RNS packet")
+		debug.Log(debug.DEBUG_ALL, "Calling packet callback for RNS packet")
 		callback(data, tc)
 	} else {
-		log.Printf("[DEBUG-7] No packet callback set for TCP interface")
+		debug.Log(debug.DEBUG_ALL, "No packet callback set for TCP interface")
 	}
 }
 
 // Send implements the interface Send method for TCP interface
 func (tc *TCPClientInterface) Send(data []byte, address string) error {
-	log.Printf("[DEBUG-7] TCP interface %s: Sending %d bytes", tc.Name, len(data))
+	debug.Log(debug.DEBUG_ALL, "TCP interface sending bytes", "name", tc.Name, "bytes", len(data))
 	
 	if !tc.IsEnabled() || !tc.IsOnline() {
 		return fmt.Errorf("TCP interface %s is not online", tc.Name)
@@ -223,10 +223,10 @@ func (tc *TCPClientInterface) ProcessOutgoing(data []byte) error {
 	// Update TX stats before sending
 	tc.UpdateStats(uint64(len(frame)), false)
 
-	log.Printf("[DEBUG-7] TCP interface %s: Writing %d bytes to network", tc.Name, len(frame))
+	debug.Log(debug.DEBUG_ALL, "TCP interface writing to network", "name", tc.Name, "bytes", len(frame))
 	_, err := tc.conn.Write(frame)
 	if err != nil {
-		log.Printf("[DEBUG-1] TCP interface %s: Write failed: %v", tc.Name, err)
+		debug.Log(debug.DEBUG_CRITICAL, "TCP interface write failed", "name", tc.Name, "error", err)
 	}
 	return err
 }
@@ -390,7 +390,7 @@ func (tc *TCPClientInterface) GetRTT() time.Duration {
 				if err := info.Control(func(fd uintptr) { // #nosec G104
 					rtt = platformGetRTT(fd)
 				}); err != nil {
-					log.Printf("[DEBUG-2] Error in SyscallConn Control: %v", err)
+					debug.Log(debug.DEBUG_ERROR, "Error in SyscallConn Control", "error", err)
 				}
 			}
 		}
@@ -420,13 +420,11 @@ func (tc *TCPClientInterface) UpdateStats(bytes uint64, isRx bool) {
 	if isRx {
 		tc.RxBytes += bytes
 		tc.lastRx = now
-		log.Printf("[DEBUG-5] Interface %s RX stats: bytes=%d total=%d last=%v",
-			tc.Name, bytes, tc.RxBytes, tc.lastRx)
+		debug.Log(debug.DEBUG_TRACE, "Interface RX stats", "name", tc.Name, "bytes", bytes, "total", tc.RxBytes, "last", tc.lastRx)
 	} else {
 		tc.TxBytes += bytes
 		tc.lastTx = now
-		log.Printf("[DEBUG-5] Interface %s TX stats: bytes=%d total=%d last=%v",
-			tc.Name, bytes, tc.TxBytes, tc.lastTx)
+		debug.Log(debug.DEBUG_TRACE, "Interface TX stats", "name", tc.Name, "bytes", bytes, "total", tc.TxBytes, "last", tc.lastTx)
 	}
 }
 
@@ -580,7 +578,7 @@ func (ts *TCPServerInterface) Start() error {
 				if !ts.Online {
 					return // Normal shutdown
 				}
-				log.Printf("[DEBUG-2] Error accepting connection: %v", err)
+				debug.Log(debug.DEBUG_ERROR, "Error accepting connection", "error", err)
 				continue
 			}
 
@@ -663,8 +661,7 @@ func (ts *TCPServerInterface) ProcessOutgoing(data []byte) error {
 
 	for _, conn := range ts.connections {
 		if _, err := conn.Write(frame); err != nil {
-			log.Printf("[DEBUG-4] Error writing to connection %s: %v",
-				conn.RemoteAddr(), err)
+			debug.Log(debug.DEBUG_VERBOSE, "Error writing to connection", "address", conn.RemoteAddr(), "error", err)
 		}
 	}
 
