@@ -1,7 +1,8 @@
 GOCMD=go
 GOBUILD=$(GOCMD) build
-GOBUILD_EXPERIMENTAL=GOEXPERIMENT=greenteagc $(GOCMD) build
+GOBUILD_DEBUG=$(GOCMD) build
 GOBUILD_RELEASE=CGO_ENABLED=0 $(GOCMD) build -ldflags="-s -w"
+GOBUILD_EXPERIMENTAL=GOEXPERIMENT=greenteagc $(GOCMD) build
 GOCLEAN=$(GOCMD) clean
 GOTEST=$(GOCMD) test
 GOGET=$(GOCMD) get
@@ -15,13 +16,17 @@ MAIN_PACKAGE=./cmd/reticulum-go
 
 ALL_PACKAGES=$$(go list ./... | grep -v /vendor/)
 
-.PHONY: all build build-experimental experimental release lint bench bench-experimental bench-compare clean test coverage deps help tinygo-build tinygo-wasm
+.PHONY: all build build-experimental experimental release debug lint bench bench-experimental bench-compare clean test coverage deps help tinygo-build tinygo-wasm run
 
 all: clean deps build test
 
 build:
 	@mkdir -p $(BUILD_DIR)
-	$(GOBUILD) -o $(BUILD_DIR)/$(BINARY_NAME) $(MAIN_PACKAGE)
+	$(GOBUILD_RELEASE) -o $(BUILD_DIR)/$(BINARY_NAME) $(MAIN_PACKAGE)
+
+debug:
+	@mkdir -p $(BUILD_DIR)
+	$(GOBUILD_DEBUG) -o $(BUILD_DIR)/$(BINARY_NAME) $(MAIN_PACKAGE)
 
 build-experimental:
 	@mkdir -p $(BUILD_DIR)
@@ -56,7 +61,11 @@ coverage:
 	$(GOCMD) tool cover -html=coverage.out
 
 deps:
+	@GOPROXY=$${GOPROXY:-https://proxy.golang.org,direct}; \
+	export GOPROXY; \
 	$(GOMOD) download
+	@GOPROXY=$${GOPROXY:-https://proxy.golang.org,direct}; \
+	export GOPROXY; \
 	$(GOMOD) verify
 
 build-linux:
@@ -103,7 +112,7 @@ build-riscv:
 build-all: build-linux build-windows build-darwin build-freebsd build-openbsd build-netbsd build-arm build-riscv
 
 run:
-	@./$(BUILD_DIR)/$(BINARY_NAME)
+	$(GOCMD) run $(MAIN_PACKAGE)
 
 tinygo-build:
 	@mkdir -p $(BUILD_DIR)
@@ -119,10 +128,11 @@ install:
 help:
 	@echo "Available targets:"
 	@echo "  all                - Clean, download dependencies, build and test"
-	@echo "  build              - Build binary"
+	@echo "  build              - Build release binary (no debug symbols, static)"
+	@echo "  debug              - Build debug binary"
 	@echo "  build-experimental - Build binary with experimental features (GOEXPERIMENT=greenteagc)"
 	@echo "  experimental       - Alias for build-experimental"
-	@echo "  release            - Build stripped static binary for release"
+	@echo "  release            - Build stripped static binary for release (alias for build)"
 	@echo "  lint               - Run revive linter"
 	@echo "  bench              - Run benchmarks with standard GC"
 	@echo "  bench-experimental - Run benchmarks with experimental GC"
@@ -140,7 +150,7 @@ help:
 	@echo "  build-arm    - Build for ARM architectures (arm, arm64)"
 	@echo "  build-riscv  - Build for RISC-V architecture (riscv64)"
 	@echo "  build-all    - Build for all platforms and architectures"
-	@echo "  run          - Run reticulum binary"
+	@echo "  run                - Run with go run"
 	@echo "  tinygo-build - Build binary with TinyGo compiler"
 	@echo "  tinygo-wasm  - Build WebAssembly binary with TinyGo compiler"
 	@echo "  install      - Install dependencies" 
