@@ -15,7 +15,7 @@ MAIN_PACKAGE=./cmd/reticulum-go
 
 ALL_PACKAGES=$$(go list ./... | grep -v /vendor/)
 
-.PHONY: all build build-experimental experimental release lint bench bench-experimental bench-compare clean test coverage deps help tinygo-build tinygo-wasm
+.PHONY: all build build-experimental experimental release lint bench bench-experimental bench-compare clean test coverage deps help tinygo-build tinygo-build-debug tinygo-build-all
 
 all: clean deps build test
 
@@ -107,11 +107,23 @@ run:
 
 tinygo-build:
 	@mkdir -p $(BUILD_DIR)
-	tinygo build -o $(BUILD_DIR)/$(BINARY_NAME)-tinygo -size short $(MAIN_PACKAGE)
+	tinygo build -o $(BUILD_DIR)/$(BINARY_NAME)-tinygo -size short -opt=z -gc=leaking -panic=trap $(MAIN_PACKAGE)
 
-tinygo-wasm:
+tinygo-build-debug:
 	@mkdir -p $(BUILD_DIR)
-	tinygo build -target wasm -o $(BUILD_DIR)/$(BINARY_NAME).wasm $(MAIN_PACKAGE)
+	tinygo build -o $(BUILD_DIR)/$(BINARY_NAME)-tinygo-debug -size short -opt=1 $(MAIN_PACKAGE)
+
+tinygo-build-all:
+	@mkdir -p $(BUILD_DIR)
+	@echo "Building for all TinyGo targets..."
+	@targets=$$(tinygo targets); \
+	for target in $$targets; do \
+		if [ -n "$$target" ]; then \
+			echo "Building for target: $$target"; \
+			tinygo build -target $$target -o $(BUILD_DIR)/$(BINARY_NAME)-$$target -size short -opt=z -gc=leaking -panic=trap $(MAIN_PACKAGE) 2>&1 | tee $(BUILD_DIR)/build-$$target.log || echo "Failed to build for $$target (see $(BUILD_DIR)/build-$$target.log)"; \
+		fi; \
+	done
+	@echo "Build complete. Check $(BUILD_DIR)/ for outputs and logs."
 
 install:
 	$(GOMOD) download
@@ -141,6 +153,7 @@ help:
 	@echo "  build-riscv  - Build for RISC-V architecture (riscv64)"
 	@echo "  build-all    - Build for all platforms and architectures"
 	@echo "  run          - Run reticulum binary"
-	@echo "  tinygo-build - Build binary with TinyGo compiler"
-	@echo "  tinygo-wasm  - Build WebAssembly binary with TinyGo compiler"
+	@echo "  tinygo-build - Build binary with TinyGo compiler (-opt=z -gc=leaking -panic=trap)"
+	@echo "  tinygo-build-debug - Build optimized for debugging (-opt=1)"
+	@echo "  tinygo-build-all - Build for all available TinyGo targets"
 	@echo "  install      - Install dependencies" 
