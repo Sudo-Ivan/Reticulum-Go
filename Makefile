@@ -117,13 +117,20 @@ tinygo-build-all:
 	@mkdir -p $(BUILD_DIR)
 	@echo "Building for all TinyGo targets..."
 	@targets=$$(tinygo targets); \
+	failed=0; \
 	for target in $$targets; do \
 		if [ -n "$$target" ]; then \
 			echo "Building for target: $$target"; \
-			tinygo build -target $$target -o $(BUILD_DIR)/$(BINARY_NAME)-$$target -size short -opt=z -gc=leaking -panic=trap $(MAIN_PACKAGE) 2>&1 | tee $(BUILD_DIR)/build-$$target.log || echo "Failed to build for $$target (see $(BUILD_DIR)/build-$$target.log)"; \
+			if ! tinygo build -target $$target -o $(BUILD_DIR)/$(BINARY_NAME)-$$target -size short -opt=z -gc=leaking -panic=trap $(MAIN_PACKAGE) 2>&1 | tee $(BUILD_DIR)/build-$$target.log; then \
+				echo "Failed to build for $$target" >> $(BUILD_DIR)/build-$$target.log; \
+				failed=$$((failed + 1)); \
+			fi; \
 		fi; \
-	done
-	@echo "Build complete. Check $(BUILD_DIR)/ for outputs and logs."
+	done; \
+	echo "Build complete. Check $(BUILD_DIR)/ for outputs and logs."; \
+	if [ $$failed -gt 0 ]; then \
+		echo "$$failed target(s) failed to build. See logs in $(BUILD_DIR)/build-*.log"; \
+	fi
 
 install:
 	$(GOMOD) download
