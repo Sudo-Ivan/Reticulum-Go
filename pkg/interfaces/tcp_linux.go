@@ -1,5 +1,5 @@
-//go:build linux
-// +build linux
+//go:build linux && !tinygo
+// +build linux,!tinygo
 
 package interfaces
 
