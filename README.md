@@ -15,7 +15,7 @@ A Go implementation of the [Reticulum Network Protocol](https://github.com/markq
 
 - To be fully compatible with the Python reference implementation.
 - Additional privacy and security features.
-- Support for a broader range of platforms and architectures old and new.
+- Support for a broader range of platforms and architectures legacy and modern.
 
 ## Quick Start
 
@@ -62,3 +62,7 @@ make build-experimental
 
 - [Telegram](https://t.me/reticulum_go)
 - [Matrix](https://matrix.to/#/#reticulum-go-dev:matrix.org)
+
+## Donations
+
+See [donate.md](donate.md) for more information.
