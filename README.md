@@ -8,9 +8,6 @@
 
 A Go implementation of the [Reticulum Network Protocol](https://github.com/markqvist/Reticulum).
 
-> [!WARNING]  
-> This project is currently in development and is not yet compatible with the Python reference implementation.
-
 ## Goals
 
 - To be fully compatible with the Python reference implementation.
