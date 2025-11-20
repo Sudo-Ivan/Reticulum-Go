@@ -44,9 +44,10 @@ func TestNewAutoInterface(t *testing.T) {
 
 	t.Run("CustomConfig", func(t *testing.T) {
 		config := &common.InterfaceConfig{
-			Enabled: true,
-			Port:    12345, // Custom discovery port
-			GroupID: "customGroup",
+			Enabled:       true,
+			DiscoveryPort: 12345,
+			DataPort:      54321,
+			GroupID:       "customGroup",
 		}
 		ai, err := NewAutoInterface("autoCustom", config)
 		if err != nil {
@@ -58,6 +59,9 @@ func TestNewAutoInterface(t *testing.T) {
 
 		if ai.discoveryPort != 12345 {
 			t.Errorf("discoveryPort = %d; want 12345", ai.discoveryPort)
+		}
+		if ai.dataPort != 54321 {
+			t.Errorf("dataPort = %d; want 54321", ai.dataPort)
 		}
 		if string(ai.groupID) != "customGroup" {
 			t.Errorf("groupID = %s; want customGroup", string(ai.groupID))
@@ -79,9 +83,11 @@ func newMockAutoInterface(name string, config *common.InterfaceConfig) (*mockAut
 	// Initialize maps that would normally be initialized in Start()
 	ai.peers = make(map[string]*Peer)
 	ai.linkLocalAddrs = make([]string, 0)
-	ai.adoptedInterfaces = make(map[string]string)
+	ai.adoptedInterfaces = make(map[string]*AdoptedInterface)
 	ai.interfaceServers = make(map[string]*net.UDPConn)
+	ai.discoveryServers = make(map[string]*net.UDPConn)
 	ai.multicastEchoes = make(map[string]time.Time)
+	ai.timedOutInterfaces = make(map[string]time.Time)
 
 	return &mockAutoInterface{AutoInterface: ai}, nil
 }
