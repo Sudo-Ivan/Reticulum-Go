@@ -8,7 +8,6 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -19,6 +18,7 @@ import (
 	"github.com/Sudo-Ivan/reticulum-go/pkg/common"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/cryptography"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/debug"
+	"github.com/vmihailenco/msgpack/v5"
 	"golang.org/x/crypto/curve25519"
 	"golang.org/x/crypto/hkdf"
 )
@@ -44,7 +44,7 @@ const (
 type Identity struct {
 	privateKey      []byte
 	publicKey       []byte
-	signingSeed     []byte // 32-byte Ed25519 seed (compatible with Python RNS)
+	signingSeed     []byte // 32-byte Ed25519 seed
 	verificationKey ed25519.PublicKey
 	hash            []byte
 	hexHash         string
@@ -76,7 +76,7 @@ func New() (*Identity, error) {
 	i.privateKey = privKey
 	i.publicKey = pubKey
 
-	// Generate 32-byte Ed25519 seed (compatible with Python RNS)
+	// Generate 32-byte Ed25519 seed
 	var ed25519Seed [32]byte
 	if _, err := io.ReadFull(rand.Reader, ed25519Seed[:]); err != nil {
 		return nil, fmt.Errorf("failed to generate Ed25519 seed: %v", err)
@@ -105,7 +105,7 @@ func (i *Identity) GetPrivateKey() []byte {
 }
 
 func (i *Identity) Sign(data []byte) []byte {
-	// Derive Ed25519 private key from seed (compatible with Python RNS)
+	// Derive Ed25519 private key from seed
 	privKey := ed25519.NewKeyFromSeed(i.signingSeed)
 	return cryptography.Sign(privKey, data)
 }
@@ -471,21 +471,18 @@ func (i *Identity) DecryptWithHMAC(data []byte, key []byte) ([]byte, error) {
 func (i *Identity) ToFile(path string) error {
 	debug.Log(debug.DEBUG_ALL, "Saving identity to file", "hash", i.GetHexHash(), "path", path)
 
-	// Persist ratchets to a separate file
-	ratchetPath := path + ".ratchets"
-	if err := i.saveRatchets(ratchetPath); err != nil {
-		debug.Log(debug.DEBUG_CRITICAL, "Failed to save ratchets", "error", err)
-		// Continue saving the main identity file even if ratchets fail
+	if i.privateKey == nil || i.signingSeed == nil {
+		return errors.New("cannot save identity without private keys")
 	}
 
-	data := map[string]interface{}{
-		"private_key":      i.privateKey,
-		"public_key":       i.publicKey,
-		"signing_seed":     i.signingSeed,
-		"verification_key": i.verificationKey,
-		"app_data":         i.appData,
-	}
+	// Store private keys as raw bytes
+	// Format: [X25519 PrivKey (32 bytes)][Ed25519 PrivKey (32 bytes)]
+	// Total: 64 bytes
+	privateKeyBytes := make([]byte, 64)
+	copy(privateKeyBytes[:32], i.privateKey)
+	copy(privateKeyBytes[32:], i.signingSeed)
 
+	// Write raw bytes to file
 	file, err := os.Create(path) // #nosec G304
 	if err != nil {
 		debug.Log(debug.DEBUG_CRITICAL, "Failed to create identity file", "error", err)
@@ -493,12 +490,12 @@ func (i *Identity) ToFile(path string) error {
 	}
 	defer file.Close()
 
-	if err := json.NewEncoder(file).Encode(data); err != nil {
-		debug.Log(debug.DEBUG_CRITICAL, "Failed to encode identity data", "error", err)
+	if _, err := file.Write(privateKeyBytes); err != nil {
+		debug.Log(debug.DEBUG_CRITICAL, "Failed to write identity data", "error", err)
 		return err
 	}
 
-	debug.Log(debug.DEBUG_ALL, "Identity saved successfully")
+	debug.Log(debug.DEBUG_ALL, "Identity saved successfully", "bytes", len(privateKeyBytes))
 	return nil
 }
 
@@ -511,18 +508,56 @@ func (i *Identity) saveRatchets(path string) error {
 	}
 
 	debug.Log(debug.DEBUG_PACKETS, "Saving ratchets", "count", len(i.ratchets), "path", path)
-	data := map[string]interface{}{
-		"ratchets":       i.ratchets,
-		"ratchet_expiry": i.ratchetExpiry,
+	
+	// Convert ratchets to list format for msgpack
+	ratchetList := make([][]byte, 0, len(i.ratchets))
+	for _, ratchet := range i.ratchets {
+		ratchetList = append(ratchetList, ratchet)
 	}
 
-	file, err := os.Create(path) // #nosec G304
+	// Pack ratchets using msgpack
+	packedRatchets, err := msgpack.Marshal(ratchetList)
 	if err != nil {
-		return fmt.Errorf("failed to create ratchet file: %w", err)
+		return fmt.Errorf("failed to pack ratchets: %w", err)
 	}
-	defer file.Close()
 
-	return json.NewEncoder(file).Encode(data)
+	// Sign the packed ratchets
+	signature := i.Sign(packedRatchets)
+
+	// Create structure: {"signature": ..., "ratchets": ...}
+	persistedData := map[string][]byte{
+		"signature": signature,
+		"ratchets":  packedRatchets,
+	}
+
+	// Pack the entire structure
+	finalData, err := msgpack.Marshal(persistedData)
+	if err != nil {
+		return fmt.Errorf("failed to pack ratchet data: %w", err)
+	}
+
+	// Write to temporary file first, then rename (atomic operation)
+	tempPath := path + ".tmp"
+	file, err := os.Create(tempPath) // #nosec G304
+	if err != nil {
+		return fmt.Errorf("failed to create temp ratchet file: %w", err)
+	}
+
+	if _, err := file.Write(finalData); err != nil {
+		file.Close()
+		os.Remove(tempPath)
+		return fmt.Errorf("failed to write ratchet data: %w", err)
+	}
+	file.Close()
+
+	// Atomic rename
+	if err := os.Rename(tempPath, path); err != nil {
+		os.Remove(tempPath)
+		return fmt.Errorf("failed to rename ratchet file: %w", err)
+	}
+
+	debug.Log(debug.DEBUG_PACKETS, "Ratchets saved successfully")
+	return nil
 }
 
 func RecallIdentity(path string) (*Identity, error) {
@@ -535,43 +570,47 @@ func RecallIdentity(path string) (*Identity, error) {
 	}
 	defer file.Close()
 
-	var data map[string]interface{}
-	if err := json.NewDecoder(file).Decode(&data); err != nil {
-		debug.Log(debug.DEBUG_CRITICAL, "Failed to decode identity data", "error", err)
+	// Read raw bytes
+	// Format: [X25519 PrivKey (32 bytes)][Ed25519 PrivKey (32 bytes)]
+	privateKeyBytes := make([]byte, 64)
+	n, err := io.ReadFull(file, privateKeyBytes)
+	if err != nil {
+		debug.Log(debug.DEBUG_CRITICAL, "Failed to read identity data", "error", err)
 		return nil, err
 	}
-
-	var signingSeed []byte
-	var verificationKey ed25519.PublicKey
-
-	if seedData, exists := data["signing_seed"]; exists {
-		signingSeed = seedData.([]byte)
-		verificationKey = data["verification_key"].(ed25519.PublicKey)
-	} else if keyData, exists := data["signing_key"]; exists {
-		oldKey := keyData.(ed25519.PrivateKey)
-		signingSeed = oldKey[:32]
-		verificationKey = data["verification_key"].(ed25519.PublicKey)
-	} else {
-		return nil, fmt.Errorf("no signing key data found in identity file")
+	if n != 64 {
+		return nil, fmt.Errorf("invalid identity file: expected 64 bytes, got %d", n)
 	}
 
+	// Extract keys
+	x25519PrivKey := privateKeyBytes[:32]
+	ed25519Seed := privateKeyBytes[32:]
+
+	// Derive public keys
+	x25519PubKey, err := curve25519.X25519(x25519PrivKey, curve25519.Basepoint)
+	if err != nil {
+		return nil, fmt.Errorf("failed to derive X25519 public key: %v", err)
+	}
+
+	ed25519PrivKey := ed25519.NewKeyFromSeed(ed25519Seed)
+	ed25519PubKey := ed25519PrivKey.Public().(ed25519.PublicKey)
+
 	id := &Identity{
-		privateKey:      data["private_key"].([]byte),
-		publicKey:       data["public_key"].([]byte),
-		signingSeed:     signingSeed,
-		verificationKey: verificationKey,
-		appData:         data["app_data"].([]byte),
+		privateKey:      x25519PrivKey,
+		publicKey:       x25519PubKey,
+		signingSeed:     ed25519Seed,
+		verificationKey: ed25519PubKey,
 		ratchets:        make(map[string][]byte),
 		ratchetExpiry:   make(map[string]int64),
 		mutex:           &sync.RWMutex{},
 	}
 
-	// Load ratchets if they exist
-	ratchetPath := path + ".ratchets"
-	if err := id.loadRatchets(ratchetPath); err != nil {
-		debug.Log(debug.DEBUG_ERROR, "Could not load ratchets for identity", "hash", id.GetHexHash(), "error", err)
-		// This is not a fatal error, the identity can still function
-	}
+	// Generate hash
+	combinedPub := make([]byte, KEYSIZE/8)
+	copy(combinedPub[:KEYSIZE/16], id.publicKey)
+	copy(combinedPub[KEYSIZE/16:], id.verificationKey)
+	hash := sha256.Sum256(combinedPub)
+	id.hash = hash[:]
 
 	debug.Log(debug.DEBUG_ALL, "Successfully recalled identity", "hash", id.GetHexHash())
 	return id, nil
@@ -591,25 +630,48 @@ func (i *Identity) loadRatchets(path string) error {
 	}
 	defer file.Close()
 
-	var data map[string]interface{}
-	if err := json.NewDecoder(file).Decode(&data); err != nil {
-		return fmt.Errorf("failed to decode ratchet data: %w", err)
+	// Read all data
+	fileData, err := io.ReadAll(file)
+	if err != nil {
+		return fmt.Errorf("failed to read ratchet file: %w", err)
 	}
 
-	if ratchets, ok := data["ratchets"].(map[string]interface{}); ok {
-		for id, key := range ratchets {
-			if keyStr, ok := key.(string); ok {
-				i.ratchets[id] = []byte(keyStr)
-			}
-		}
+	// Unpack outer structure: {"signature": ..., "ratchets": ...}
+	var persistedData map[string][]byte
+	if err := msgpack.Unmarshal(fileData, &persistedData); err != nil {
+		return fmt.Errorf("failed to unpack ratchet data: %w", err)
 	}
 
-	if expiry, ok := data["ratchet_expiry"].(map[string]interface{}); ok {
-		for id, timeVal := range expiry {
-			if timeFloat, ok := timeVal.(float64); ok {
-				i.ratchetExpiry[id] = int64(timeFloat)
-			}
+	signature, hasSignature := persistedData["signature"]
+	packedRatchets, hasRatchets := persistedData["ratchets"]
+	
+	if !hasSignature || !hasRatchets {
+		return fmt.Errorf("invalid ratchet file format: missing signature or ratchets")
+	}
+
+	// Verify signature
+	if !i.Verify(packedRatchets, signature) {
+		return fmt.Errorf("invalid ratchet file signature")
+	}
+
+	// Unpack ratchet list
+	var ratchetList [][]byte
+	if err := msgpack.Unmarshal(packedRatchets, &ratchetList); err != nil {
+		return fmt.Errorf("failed to unpack ratchet list: %w", err)
+	}
+
+	// Store ratchets with generated IDs
+	now := time.Now().Unix()
+	for _, ratchet := range ratchetList {
+		// Generate ratchet public key to create ID
+		ratchetPub, err := curve25519.X25519(ratchet, curve25519.Basepoint)
+		if err != nil {
+			debug.Log(debug.DEBUG_ERROR, "Failed to generate ratchet public key", "error", err)
+			continue
 		}
+		ratchetID := i.GetRatchetID(ratchetPub)
+		i.ratchets[string(ratchetID)] = ratchet
+		i.ratchetExpiry[string(ratchetID)] = now + RATCHET_EXPIRY
 	}
 
 	debug.Log(debug.DEBUG_PACKETS, "Loaded ratchets", "count", len(i.ratchets), "path", path)
@@ -668,7 +730,7 @@ func (i *Identity) SetRatchetKey(id string, key []byte) {
 
 // NewIdentity creates a new Identity instance with fresh keys
 func NewIdentity() (*Identity, error) {
-	// Generate 32-byte Ed25519 seed (compatible with Python RNS)
+	// Generate 32-byte Ed25519 seed
 	var ed25519Seed [32]byte
 	if _, err := io.ReadFull(rand.Reader, ed25519Seed[:]); err != nil {
 		return nil, fmt.Errorf("failed to generate Ed25519 seed: %v", err)
