@@ -713,30 +713,46 @@ func (t *Transport) handleAnnouncePacket(data []byte, iface common.NetworkInterf
 		startIdx += 1 // For now assume 1 byte IFAC code
 	}
 
+	// Announce packets use HEADER_TYPE_1 (single address field)
 	// Calculate address field size
-	addrSize := 16
+	addrSize := 16 // Always 16 bytes for HEADER_TYPE_1
 	if headerType == 1 {
-		addrSize = 32 // Two address fields
+		// HEADER_TYPE_2 has two address fields
+		addrSize = 32
 	}
 
 	// Validate minimum packet size
-	minSize := startIdx + addrSize + 1 // Header + addresses + context
+	minSize := startIdx + addrSize + 1 // Header + address(es) + context
 	if len(data) < minSize {
 		return fmt.Errorf("packet too small: %d bytes", len(data))
 	}
 
-	// Extract fields
-	addresses := data[startIdx : startIdx+addrSize]
-	context := data[startIdx+addrSize]
-	payload := data[startIdx+addrSize+1:]
+	// Extract fields based on header type
+	var destinationHash []byte
+	var context byte
+	var payload []byte
+	
+	if headerType == 0 {
+		// HEADER_TYPE_1: Header(2) + DestHash(16) + Context(1) + Data
+		destinationHash = data[startIdx : startIdx+16]
+		context = data[startIdx+16]
+		payload = data[startIdx+17:]
+	} else {
+		// HEADER_TYPE_2: Header(2) + TransportID(16) + DestHash(16) + Context(1) + Data
+		// Skip transport ID, get destination hash
+		destinationHash = data[startIdx+16 : startIdx+32]
+		context = data[startIdx+32]
+		payload = data[startIdx+33:]
+	}
 
-	debug.Log(debug.DEBUG_INFO, "Addresses", "addresses", fmt.Sprintf("%x", addresses), "len", len(addresses))
+	debug.Log(debug.DEBUG_INFO, "Destination hash", "hash", fmt.Sprintf("%x", destinationHash))
 	debug.Log(debug.DEBUG_INFO, "Context and payload", "context", fmt.Sprintf("%02x", context), "payload_len", len(payload))
 	debug.Log(debug.DEBUG_INFO, "Packet total length", "length", len(data))
 
 	// Parse announce packet according to RNS specification
-	// All announce packets have the same format:
-	// [Public Key (64)][Name Hash (10)][Random Hash (10)][Ratchet (0-32)][Signature (64)][App Data]
+	// Announce packets have the format:
+	// [Public Key (64)][Name Hash (10)][Random Hash (10)][Ratchet (0 or 32)][Signature (64)][App Data]
+	// Ratchet is present if context flag is set
 
 	var id *identity.Identity
 	var appData []byte
@@ -757,14 +773,14 @@ func (t *Transport) handleAnnouncePacket(data []byte, iface common.NetworkInterf
 	randomHash := payload[pos : pos+10]
 	pos += 10
 
-	// Check if there's a ratchet (context flag determines this)
-	// For now, assume no ratchet if payload is shorter
+	// Check if there's a ratchet based on context flag
 	var ratchetData []byte
-
-	// Calculate if there's space for a ratchet
-	remainingBeforeSig := len(payload) - pos - 64
-	if remainingBeforeSig == 32 {
-		// Has ratchet
+	if contextFlag == 1 {
+		// Context flag is set, ratchet is present
+		if len(payload) < pos+32+64 {
+			debug.Log(debug.DEBUG_INFO, "Payload too small for announce with ratchet")
+			return fmt.Errorf("payload too small for announce with ratchet")
+		}
 		ratchetData = payload[pos : pos+32]
 		pos += 32
 	}
@@ -777,7 +793,7 @@ func (t *Transport) handleAnnouncePacket(data []byte, iface common.NetworkInterf
 	if len(ratchetData) > 0 {
 		ratchetHex = fmt.Sprintf("%x", ratchetData[:8])
 	} else {
-		ratchetHex = "(empty)"
+		ratchetHex = "(none)"
 	}
 	debug.Log(debug.DEBUG_INFO, "Parsed announce", "pubKey", fmt.Sprintf("%x", pubKey[:8]), "nameHash", fmt.Sprintf("%x", nameHash), "randomHash", fmt.Sprintf("%x", randomHash), "ratchet", ratchetHex, "appData_len", len(appData))
 
@@ -789,10 +805,8 @@ func (t *Transport) handleAnnouncePacket(data []byte, iface common.NetworkInterf
 	}
 	debug.Log(debug.DEBUG_INFO, "Successfully created identity")
 
-	// For announce packets, use destination hash from packet header (first 16 bytes of addresses)
-	// This matches the RNS validate_announce logic
-	destinationHash := addresses[:16]
-
+	// Build signature data:
+	// destination_hash + public_key + name_hash + random_hash + ratchet (if present) + app_data
 	signData := make([]byte, 0)
 	signData = append(signData, destinationHash...) // destination hash from packet header
 	signData = append(signData, pubKey...)
@@ -805,45 +819,32 @@ func (t *Transport) handleAnnouncePacket(data []byte, iface common.NetworkInterf
 
 	debug.Log(debug.DEBUG_INFO, "Verifying signature", "data_len", len(signData))
 
-	// Check if this passes full RNS validation (signature + destination hash check)
+	// Verify signature
+	if !id.Verify(signData, signature) {
+		debug.Log(debug.DEBUG_INFO, "Signature verification failed - announce rejected")
+		return fmt.Errorf("invalid announce signature")
+	}
+	debug.Log(debug.DEBUG_INFO, "Signature verification successful")
+
+	// Validate destination hash according to RNS spec:
+	// expected_hash = SHA256(name_hash + identity_hash)[:16]
 	hashMaterial := make([]byte, 0)
-	hashMaterial = append(hashMaterial, nameHash...)        // Name hash (10 bytes) first
-	hashMaterial = append(hashMaterial, id.Hash()...)      // Identity hash (16 bytes) second
+	hashMaterial = append(hashMaterial, nameHash...)   // Name hash (10 bytes) first
+	hashMaterial = append(hashMaterial, id.Hash()...)  // Identity hash (16 bytes) second
 	expectedHashFull := sha256.Sum256(hashMaterial)
 	expectedHash := expectedHashFull[:16]
 
-	debug.Log(debug.DEBUG_INFO, "Destination hash from packet", "hash", fmt.Sprintf("%x", destinationHash))
-	debug.Log(debug.DEBUG_INFO, "Expected destination hash", "hash", fmt.Sprintf("%x", expectedHash))
-	debug.Log(debug.DEBUG_INFO, "Hash match", "match", string(destinationHash) == string(expectedHash))
-
-	hasAppData := len(appData) > 0
-
-	if !id.Verify(signData, signature) {
-		if hasAppData {
-			debug.Log(debug.DEBUG_INFO, "Announce packet has app_data, signature failed but accepting")
-		} else {
-			debug.Log(debug.DEBUG_INFO, "Signature verification failed - announce rejected")
-			return fmt.Errorf("invalid announce signature")
-		}
-	} else {
-		debug.Log(debug.DEBUG_INFO, "Signature verification successful")
-	}
+	debug.Log(debug.DEBUG_INFO, "Destination hash validation", "received", fmt.Sprintf("%x", destinationHash), "expected", fmt.Sprintf("%x", expectedHash))
 
 	if string(destinationHash) != string(expectedHash) {
-		if hasAppData {
-			debug.Log(debug.DEBUG_INFO, "Announce packet has app_data, destination hash mismatch but accepting")
-		} else {
-			debug.Log(debug.DEBUG_INFO, "Destination hash mismatch - announce rejected")
-			return fmt.Errorf("destination hash mismatch")
-		}
-	} else {
-		debug.Log(debug.DEBUG_INFO, "Destination hash validation successful")
+		debug.Log(debug.DEBUG_INFO, "Destination hash mismatch - announce rejected")
+		return fmt.Errorf("destination hash mismatch")
 	}
+	debug.Log(debug.DEBUG_INFO, "Destination hash validation successful")
 
-	debug.Log(debug.DEBUG_INFO, "Signature and destination hash verified successfully")
 	// Log app_data content for accepted announces
 	if len(appData) > 0 {
-		debug.Log(debug.DEBUG_INFO, "Accepted announce app_data", "data", fmt.Sprintf("%x", appData), "string", string(appData))
+		debug.Log(debug.DEBUG_INFO, "Accepted announce with app_data", "data", fmt.Sprintf("%x", appData), "string", string(appData))
 	}
 
 	// Store the identity for later recall
@@ -877,8 +878,8 @@ func (t *Transport) handleAnnouncePacket(data []byte, iface common.NetworkInterf
 	}
 
 	// Notify handlers first, regardless of forwarding limits
-	debug.Log(debug.DEBUG_INFO, "Notifying announce handlers", "destHash", fmt.Sprintf("%x", addresses[:16]), "appDataLen", len(appData))
-	t.notifyAnnounceHandlers(addresses[:16], id, appData)
+	debug.Log(debug.DEBUG_INFO, "Notifying announce handlers", "destHash", fmt.Sprintf("%x", destinationHash), "appDataLen", len(appData))
+	t.notifyAnnounceHandlers(destinationHash, id, appData)
 	debug.Log(debug.DEBUG_INFO, "Announce handlers notified")
 
 	// Don't forward if max hops reached
