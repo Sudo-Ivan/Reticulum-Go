@@ -1,16 +1,22 @@
 package destination
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"sync"
+	"time"
 
 	"github.com/Sudo-Ivan/reticulum-go/pkg/announce"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/common"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/debug"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/identity"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/transport"
+	"github.com/vmihailenco/msgpack/v5"
+	"golang.org/x/crypto/curve25519"
 )
 
 const (
@@ -65,11 +71,15 @@ type Destination struct {
 	proofCallback  ProofRequestedCallback
 	linkCallback   LinkEstablishedCallback
 
-	ratchetsEnabled bool
-	ratchetPath     string
-	ratchetCount    int
-	ratchetInterval int
-	enforceRatchets bool
+	ratchetsEnabled    bool
+	ratchetPath        string
+	ratchetCount       int
+	ratchetInterval    int
+	enforceRatchets    bool
+	latestRatchetTime  time.Time
+	latestRatchetID    []byte
+	ratchets           [][]byte
+	ratchetFileLock    sync.Mutex
 
 	defaultAppData []byte
 	mutex          sync.RWMutex
@@ -282,8 +292,27 @@ func (d *Destination) EnableRatchets(path string) bool {
 	d.mutex.Lock()
 	defer d.mutex.Unlock()
 
+	if path == "" {
+		debug.Log(debug.DEBUG_ERROR, "No ratchet file path specified")
+		return false
+	}
+
 	d.ratchetsEnabled = true
 	d.ratchetPath = path
+	d.latestRatchetTime = time.Time{} // Zero time to force rotation
+
+	// Load or initialize ratchets
+	if err := d.reloadRatchets(); err != nil {
+		debug.Log(debug.DEBUG_ERROR, "Failed to load ratchets", "error", err)
+		// Initialize empty ratchet list
+		d.ratchets = make([][]byte, 0)
+		if err := d.persistRatchets(); err != nil {
+			debug.Log(debug.DEBUG_ERROR, "Failed to create initial ratchet file", "error", err)
+			return false
+		}
+	}
+
+	debug.Log(debug.DEBUG_INFO, "Ratchets enabled", "path", path)
 	return true
 }
 
@@ -451,4 +480,182 @@ func (d *Destination) GetHash() []byte {
 		}
 	}
 	return d.hashValue
+}
+
+func (d *Destination) persistRatchets() error {
+	d.ratchetFileLock.Lock()
+	defer d.ratchetFileLock.Unlock()
+
+	if !d.ratchetsEnabled || d.ratchetPath == "" {
+		return errors.New("ratchets not enabled or no path specified")
+	}
+
+	debug.Log(debug.DEBUG_PACKETS, "Persisting ratchets", "count", len(d.ratchets), "path", d.ratchetPath)
+
+	// Pack ratchets using msgpack
+	packedRatchets, err := msgpack.Marshal(d.ratchets)
+	if err != nil {
+		return fmt.Errorf("failed to pack ratchets: %w", err)
+	}
+
+	// Sign the packed ratchets
+	signature, err := d.Sign(packedRatchets)
+	if err != nil {
+		return fmt.Errorf("failed to sign ratchets: %w", err)
+	}
+
+	// Create structure
+	persistedData := map[string][]byte{
+		"signature": signature,
+		"ratchets":  packedRatchets,
+	}
+
+	// Pack the entire structure
+	finalData, err := msgpack.Marshal(persistedData)
+	if err != nil {
+		return fmt.Errorf("failed to pack ratchet data: %w", err)
+	}
+
+	// Write to temporary file first, then rename (atomic operation)
+	tempPath := d.ratchetPath + ".tmp"
+	file, err := os.Create(tempPath) // #nosec G304
+	if err != nil {
+		return fmt.Errorf("failed to create temp ratchet file: %w", err)
+	}
+
+	if _, err := file.Write(finalData); err != nil {
+		file.Close()
+		os.Remove(tempPath)
+		return fmt.Errorf("failed to write ratchet data: %w", err)
+	}
+	file.Close()
+
+	// Remove old file if exists
+	if _, err := os.Stat(d.ratchetPath); err == nil {
+		os.Remove(d.ratchetPath)
+	}
+
+	// Atomic rename
+	if err := os.Rename(tempPath, d.ratchetPath); err != nil {
+		os.Remove(tempPath)
+		return fmt.Errorf("failed to rename ratchet file: %w", err)
+	}
+
+	debug.Log(debug.DEBUG_PACKETS, "Ratchets persisted successfully")
+	return nil
+}
+
+func (d *Destination) reloadRatchets() error {
+	d.ratchetFileLock.Lock()
+	defer d.ratchetFileLock.Unlock()
+
+	if _, err := os.Stat(d.ratchetPath); os.IsNotExist(err) {
+		debug.Log(debug.DEBUG_INFO, "No existing ratchet data found, initializing new ratchet file")
+		d.ratchets = make([][]byte, 0)
+		return nil
+	}
+
+	file, err := os.Open(d.ratchetPath) // #nosec G304
+	if err != nil {
+		return fmt.Errorf("failed to open ratchet file: %w", err)
+	}
+	defer file.Close()
+
+	// Read all data
+	fileData, err := io.ReadAll(file)
+	if err != nil {
+		return fmt.Errorf("failed to read ratchet file: %w", err)
+	}
+
+	// Unpack outer structure
+	var persistedData map[string][]byte
+	if err := msgpack.Unmarshal(fileData, &persistedData); err != nil {
+		return fmt.Errorf("failed to unpack ratchet data: %w", err)
+	}
+
+	signature, hasSignature := persistedData["signature"]
+	packedRatchets, hasRatchets := persistedData["ratchets"]
+
+	if !hasSignature || !hasRatchets {
+		return fmt.Errorf("invalid ratchet file format")
+	}
+
+	// Verify signature
+	if !d.identity.Verify(packedRatchets, signature) {
+		return fmt.Errorf("invalid ratchet file signature")
+	}
+
+	// Unpack ratchet list
+	if err := msgpack.Unmarshal(packedRatchets, &d.ratchets); err != nil {
+		return fmt.Errorf("failed to unpack ratchet list: %w", err)
+	}
+
+	debug.Log(debug.DEBUG_INFO, "Ratchets reloaded successfully", "count", len(d.ratchets))
+	return nil
+}
+
+func (d *Destination) RotateRatchets() error {
+	d.mutex.Lock()
+	defer d.mutex.Unlock()
+
+	if !d.ratchetsEnabled {
+		return errors.New("ratchets not enabled")
+	}
+
+	now := time.Now()
+	if !d.latestRatchetTime.IsZero() && now.Before(d.latestRatchetTime.Add(time.Duration(d.ratchetInterval)*time.Second)) {
+		debug.Log(debug.DEBUG_TRACE, "Ratchet rotation interval not reached")
+		return nil
+	}
+
+	debug.Log(debug.DEBUG_INFO, "Rotating ratchets", "destination", d.ExpandName())
+
+	// Generate new ratchet key (32 bytes for X25519 private key)
+	newRatchet := make([]byte, 32)
+	if _, err := io.ReadFull(rand.Reader, newRatchet); err != nil {
+		return fmt.Errorf("failed to generate new ratchet: %w", err)
+	}
+
+	// Insert at beginning (most recent first)
+	d.ratchets = append([][]byte{newRatchet}, d.ratchets...)
+	d.latestRatchetTime = now
+
+	// Get ratchet public key for ID
+	ratchetPub, err := curve25519.X25519(newRatchet, curve25519.Basepoint)
+	if err == nil {
+		d.latestRatchetID = identity.TruncatedHash(ratchetPub)[:identity.NAME_HASH_LENGTH/8]
+	}
+
+	// Clean old ratchets
+	d.cleanRatchets()
+
+	// Persist to disk
+	if err := d.persistRatchets(); err != nil {
+		debug.Log(debug.DEBUG_ERROR, "Failed to persist ratchets after rotation", "error", err)
+		return err
+	}
+
+	debug.Log(debug.DEBUG_INFO, "Ratchet rotation completed", "total_ratchets", len(d.ratchets))
+	return nil
+}
+
+func (d *Destination) cleanRatchets() {
+	if len(d.ratchets) > d.ratchetCount {
+		debug.Log(debug.DEBUG_TRACE, "Cleaning old ratchets", "before", len(d.ratchets), "keeping", d.ratchetCount)
+		d.ratchets = d.ratchets[:d.ratchetCount]
+	}
+}
+
+func (d *Destination) GetRatchets() [][]byte {
+	d.mutex.RLock()
+	defer d.mutex.RUnlock()
+
+	if !d.ratchetsEnabled {
+		return nil
+	}
+
+	// Return copy to prevent external modification
+	ratchetsCopy := make([][]byte, len(d.ratchets))
+	copy(ratchetsCopy, d.ratchets)
+	return ratchetsCopy
 }
