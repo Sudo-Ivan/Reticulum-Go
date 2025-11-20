@@ -202,14 +202,14 @@ func (p *Packet) GetHash() []byte {
 func (p *Packet) getHashablePart() []byte {
 	hashable := []byte{p.Raw[0] & 0b00001111} // Lower 4 bits of flags
 	if p.HeaderType == HeaderType2 {
-		// Match Python: Start hash from DestHash (index 18), skipping TransportID
+		// Start hash from DestHash (index 18), skipping TransportID
 		dstLen := 16 // RNS.Identity.TRUNCATED_HASHLENGTH / 8
 		startIndex := dstLen + 2
 		if len(p.Raw) > startIndex {
 			hashable = append(hashable, p.Raw[startIndex:]...)
 		}
 	} else {
-		// Match Python: Start hash from DestHash (index 2)
+		// Start hash from DestHash (index 2)
 		if len(p.Raw) > 2 {
 			hashable = append(hashable, p.Raw[2:]...)
 		}
