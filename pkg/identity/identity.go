@@ -293,7 +293,7 @@ func (i *Identity) GetCurrentRatchetKey() []byte {
 
 	// Return the most recently generated ratchet key
 	var latestKey []byte
-	var latestTime int64 = 0
+	var latestTime int64
 	for id, expiry := range i.ratchetExpiry {
 		if expiry > latestTime {
 			latestTime = expiry
@@ -412,7 +412,7 @@ func (i *Identity) Decrypt(ciphertextToken []byte, ratchets [][]byte, enforceRat
 }
 
 // Helper function to attempt decryption using a ratchet
-func (i *Identity) tryRatchetDecryption(peerPubBytes, ciphertext, ratchet []byte) ([]byte, []byte, error) {
+func (i *Identity) tryRatchetDecryption(peerPubBytes, ciphertext, ratchet []byte) (plaintext, ratchetID []byte, err error) {
 	// Convert ratchet to private key
 	ratchetPriv := ratchet
 
@@ -422,7 +422,7 @@ func (i *Identity) tryRatchetDecryption(peerPubBytes, ciphertext, ratchet []byte
 		debug.Log(debug.DEBUG_ALL, "Failed to generate ratchet public key", "error", err)
 		return nil, nil, err
 	}
-	ratchetID := i.GetRatchetID(ratchetPubBytes)
+	ratchetID = i.GetRatchetID(ratchetPubBytes)
 
 	sharedSecret, err := cryptography.DeriveSharedSecret(ratchet, peerPubBytes)
 	if err != nil {
@@ -434,7 +434,7 @@ func (i *Identity) tryRatchetDecryption(peerPubBytes, ciphertext, ratchet []byte
 		return nil, nil, err
 	}
 
-	plaintext, err := cryptography.DecryptAES256CBC(key, ciphertext)
+	plaintext, err = cryptography.DecryptAES256CBC(key, ciphertext)
 	if err != nil {
 		return nil, nil, err
 	}
