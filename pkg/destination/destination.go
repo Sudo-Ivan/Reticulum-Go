@@ -524,19 +524,24 @@ func (d *Destination) persistRatchets() error {
 	}
 
 	if _, err := file.Write(finalData); err != nil {
+		// #nosec G104 - Error already being handled, cleanup errors are non-critical
 		file.Close()
+		// #nosec G104 - Error already being handled, cleanup errors are non-critical
 		os.Remove(tempPath)
 		return fmt.Errorf("failed to write ratchet data: %w", err)
 	}
+	// #nosec G104 - File is being closed after successful write, error is non-critical
 	file.Close()
 
 	// Remove old file if exists
 	if _, err := os.Stat(d.ratchetPath); err == nil {
+		// #nosec G104 - Removing old file, error is non-critical if it doesn't exist
 		os.Remove(d.ratchetPath)
 	}
 
 	// Atomic rename
 	if err := os.Rename(tempPath, d.ratchetPath); err != nil {
+		// #nosec G104 - Error already being handled, cleanup errors are non-critical
 		os.Remove(tempPath)
 		return fmt.Errorf("failed to rename ratchet file: %w", err)
 	}
