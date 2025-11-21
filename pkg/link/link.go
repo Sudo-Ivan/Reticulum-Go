@@ -9,12 +9,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"sync"
 	"time"
 
 	"github.com/Sudo-Ivan/reticulum-go/pkg/common"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/cryptography"
+	"github.com/Sudo-Ivan/reticulum-go/pkg/debug"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/destination"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/identity"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/packet"
@@ -150,25 +150,25 @@ func (l *Link) Establish() error {
 	defer l.mutex.Unlock()
 
 	if l.status != STATUS_PENDING {
-		log.Printf("[DEBUG-3] Cannot establish link: invalid status %d", l.status)
+		debug.Log(debug.DEBUG_INFO, "Cannot establish link: invalid status", "status", l.status)
 		return errors.New("link already established or failed")
 	}
 
 	destPublicKey := l.destination.GetPublicKey()
 	if destPublicKey == nil {
-		log.Printf("[DEBUG-3] Cannot establish link: destination has no public key")
+		debug.Log(debug.DEBUG_INFO, "Cannot establish link: destination has no public key")
 		return errors.New("destination has no public key")
 	}
 
 	// Generate link ID for this connection
 	l.linkID = make([]byte, 16)
 	if _, err := rand.Read(l.linkID); err != nil {
-		log.Printf("[DEBUG-3] Failed to generate link ID: %v", err)
+		debug.Log(debug.DEBUG_INFO, "Failed to generate link ID", "error", err)
 		return fmt.Errorf("failed to generate link ID: %w", err)
 	}
 	l.initiator = true
 
-	log.Printf("[DEBUG-4] Creating link request packet for destination %x with link ID %x", destPublicKey[:8], l.linkID[:8])
+	debug.Log(debug.DEBUG_VERBOSE, "Creating link request packet for destination", "dest_public_key", fmt.Sprintf("%x", destPublicKey[:8]), "link_id", fmt.Sprintf("%x", l.linkID[:8]))
 
 	p := &packet.Packet{
 		HeaderType:      packet.HeaderType1,
@@ -184,11 +184,11 @@ func (l *Link) Establish() error {
 	}
 
 	if err := p.Pack(); err != nil {
-		log.Printf("[DEBUG-3] Failed to pack link request packet: %v", err)
+		debug.Log(debug.DEBUG_INFO, "Failed to pack link request packet", "error", err)
 		return err
 	}
 
-	log.Printf("[DEBUG-4] Sending link request packet with ID %x", l.linkID[:8])
+	debug.Log(debug.DEBUG_VERBOSE, "Sending link request packet", "link_id", fmt.Sprintf("%x", l.linkID[:8]))
 	return l.transport.SendPacket(p)
 }
 
@@ -222,32 +222,32 @@ func (l *Link) HandleIdentification(data []byte) error {
 	defer l.mutex.Unlock()
 
 	if len(data) < ed25519.PublicKeySize+ed25519.SignatureSize {
-		log.Printf("[DEBUG-3] Invalid identification data length: %d bytes", len(data))
+		debug.Log(debug.DEBUG_INFO, "Invalid identification data length", "length", len(data))
 		return errors.New("invalid identification data length")
 	}
 
 	pubKey := data[:ed25519.PublicKeySize]
 	signature := data[ed25519.PublicKeySize:]
 
-	log.Printf("[DEBUG-4] Processing identification from public key %x", pubKey[:8])
+	debug.Log(debug.DEBUG_VERBOSE, "Processing identification from public key", "public_key", fmt.Sprintf("%x", pubKey[:8]))
 
 	remoteIdentity := identity.FromPublicKey(pubKey)
 	if remoteIdentity == nil {
-		log.Printf("[DEBUG-3] Invalid remote identity from public key %x", pubKey[:8])
+		debug.Log(debug.DEBUG_INFO, "Invalid remote identity from public key", "public_key", fmt.Sprintf("%x", pubKey[:8]))
 		return errors.New("invalid remote identity")
 	}
 
 	signData := append(l.linkID, pubKey...)
 	if !remoteIdentity.Verify(signData, signature) {
-		log.Printf("[DEBUG-3] Invalid signature from remote identity %x", pubKey[:8])
+		debug.Log(debug.DEBUG_INFO, "Invalid signature from remote identity", "public_key", fmt.Sprintf("%x", pubKey[:8]))
 		return errors.New("invalid signature")
 	}
 
-	log.Printf("[DEBUG-4] Remote identity verified successfully: %x", pubKey[:8])
+	debug.Log(debug.DEBUG_VERBOSE, "Remote identity verified successfully", "public_key", fmt.Sprintf("%x", pubKey[:8]))
 	l.remoteIdentity = remoteIdentity
 
 	if l.identifiedCallback != nil {
-		log.Printf("[DEBUG-4] Executing identified callback for remote identity %x", pubKey[:8])
+		debug.Log(debug.DEBUG_VERBOSE, "Executing identified callback for remote identity", "public_key", fmt.Sprintf("%x", pubKey[:8]))
 		l.identifiedCallback(l, remoteIdentity)
 	}
 
@@ -518,14 +518,14 @@ func (l *Link) SendPacket(data []byte) error {
 	defer l.mutex.Unlock()
 
 	if l.status != STATUS_ACTIVE {
-		log.Printf("[DEBUG-3] Cannot send packet: link not active (status: %d)", l.status)
+		debug.Log(debug.DEBUG_INFO, "Cannot send packet: link not active", "status", l.status)
 		return errors.New("link not active")
 	}
 
-	log.Printf("[DEBUG-4] Encrypting packet of %d bytes", len(data))
+	debug.Log(debug.DEBUG_VERBOSE, "Encrypting packet", "bytes", len(data))
 	encrypted, err := l.encrypt(data)
 	if err != nil {
-		log.Printf("[DEBUG-3] Failed to encrypt packet: %v", err)
+		debug.Log(debug.DEBUG_INFO, "Failed to encrypt packet", "error", err)
 		return err
 	}
 
@@ -546,7 +546,7 @@ func (l *Link) SendPacket(data []byte) error {
 		return err
 	}
 
-	log.Printf("[DEBUG-4] Sending encrypted packet of %d bytes", len(encrypted))
+	debug.Log(debug.DEBUG_VERBOSE, "Sending encrypted packet", "bytes", len(encrypted))
 	l.lastOutbound = time.Now()
 	l.lastDataSent = time.Now()
 
@@ -558,7 +558,7 @@ func (l *Link) HandleInbound(data []byte) error {
 	defer l.mutex.Unlock()
 
 	if l.status != STATUS_ACTIVE {
-		log.Printf("[DEBUG-3] Dropping inbound packet: link not active (status: %d)", l.status)
+		debug.Log(debug.DEBUG_INFO, "Dropping inbound packet: link not active", "status", l.status)
 		return errors.New("link not active")
 	}
 
@@ -569,7 +569,7 @@ func (l *Link) HandleInbound(data []byte) error {
 	if l.sessionKey != nil {
 		decrypted, err := l.decrypt(data)
 		if err != nil {
-			log.Printf("[DEBUG-3] Failed to decrypt packet: %v", err)
+			debug.Log(debug.DEBUG_INFO, "Failed to decrypt packet", "error", err)
 			return err
 		}
 		data = decrypted
@@ -788,32 +788,24 @@ func (l *Link) HandleProofRequest(packet *packet.Packet) bool {
 
 func (l *Link) decodePacket(data []byte) {
 	if len(data) < 1 {
-		log.Printf("[DEBUG-7] Invalid packet: zero length")
+		debug.Log(debug.DEBUG_ALL, "Invalid packet: zero length")
 		return
 	}
 
 	packetType := data[0]
-	log.Printf("[DEBUG-7] Packet Analysis:")
-	log.Printf("[DEBUG-7] - Size: %d bytes", len(data))
-	log.Printf("[DEBUG-7] - Type: 0x%02x", packetType)
+	debug.Log(debug.DEBUG_ALL, "Packet Analysis", "size", len(data), "type", fmt.Sprintf("0x%02x", packetType))
 
 	switch packetType {
 	case packet.PacketTypeData:
-		log.Printf("[DEBUG-7] - Type Description: Data Packet")
-		if len(data) > 1 {
-			log.Printf("[DEBUG-7] - Payload Size: %d bytes", len(data)-1)
-		}
+		debug.Log(debug.DEBUG_ALL, "Type Description: Data Packet", "payload_size", len(data)-1)
 
 	case packet.PacketTypeLinkReq:
-		log.Printf("[DEBUG-7] - Type Description: Link Management")
-		if len(data) > 32 {
-			log.Printf("[DEBUG-7] - Link ID: %x", data[1:33])
-		}
+		debug.Log(debug.DEBUG_ALL, "Type Description: Link Management", "link_id", fmt.Sprintf("%x", data[1:33]))
 
 	case packet.PacketTypeAnnounce:
-		log.Printf("[DEBUG-7] Received announce packet (%d bytes)", len(data))
+		debug.Log(debug.DEBUG_ALL, "Received announce packet", "bytes", len(data))
 		if len(data) < packet.MinAnnounceSize {
-			log.Printf("[DEBUG-3] Announce packet too short: %d bytes", len(data))
+			debug.Log(debug.DEBUG_INFO, "Announce packet too short", "bytes", len(data))
 			return
 		}
 
@@ -835,37 +827,28 @@ func (l *Link) decodePacket(data []byte) {
 		validationData = append(validationData, randomHash...)
 
 		if identity.ValidateAnnounce(validationData, destHash, pubKey, signature, appData) {
-			log.Printf("[DEBUG-4] Valid announce from %x", pubKey[:8])
+			debug.Log(debug.DEBUG_VERBOSE, "Valid announce from", "public_key", fmt.Sprintf("%x", pubKey[:8]))
 			if err := l.transport.HandleAnnounce(destHash, l.networkInterface); err != nil {
-				log.Printf("[DEBUG-3] Failed to handle announce: %v", err)
+				debug.Log(debug.DEBUG_INFO, "Failed to handle announce", "error", err)
 			}
 		} else {
-			log.Printf("[DEBUG-3] Invalid announce signature from %x", pubKey[:8])
+			debug.Log(debug.DEBUG_INFO, "Invalid announce signature from", "public_key", fmt.Sprintf("%x", pubKey[:8]))
 		}
 
 	case packet.PacketTypeProof:
-		log.Printf("[DEBUG-7] - Type Description: RNS Discovery")
+		debug.Log(debug.DEBUG_ALL, "Type Description: RNS Discovery")
 		if len(data) > 17 {
 			searchHash := data[1:17]
-			log.Printf("[DEBUG-7] - Searching for Hash: %x", searchHash)
+			debug.Log(debug.DEBUG_ALL, "Searching for Hash", "search_hash", fmt.Sprintf("%x", searchHash))
 
 			if id, err := resolver.ResolveIdentity(hex.EncodeToString(searchHash)); err == nil {
-				log.Printf("[DEBUG-7] - Found matching identity: %s", id.GetHexHash())
+				debug.Log(debug.DEBUG_ALL, "Found matching identity", "identity_hash", id.GetHexHash())
 			}
 		}
 
 	default:
-		log.Printf("[DEBUG-7] - Type Description: Unknown (0x%02x)", packetType)
-		log.Printf("[DEBUG-7] - Raw Hex: %x", data)
+		debug.Log(debug.DEBUG_ALL, "Type Description: Unknown", "type", fmt.Sprintf("0x%02x", packetType), "raw_hex", fmt.Sprintf("%x", data))
 	}
-}
-
-// Helper function for min of two ints
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
 
 func (l *Link) startWatchdog() {
@@ -886,10 +869,9 @@ func (l *Link) watchdog() {
 			continue
 		}
 
-		var sleepTime float64 = WATCHDOG_INTERVAL
+		var sleepTime = WATCHDOG_INTERVAL
 
-		switch l.status {
-		case STATUS_ACTIVE:
+		if l.status == STATUS_ACTIVE {
 			lastActivity := l.lastInbound
 			if l.lastOutbound.After(lastActivity) {
 				lastActivity = l.lastOutbound
@@ -898,7 +880,7 @@ func (l *Link) watchdog() {
 			if time.Since(lastActivity) > l.keepalive {
 				if l.initiator {
 					if err := l.SendPacket([]byte{}); err != nil { // #nosec G104
-						log.Printf("[DEBUG-3] Failed to send keepalive packet: %v", err)
+						debug.Log(debug.DEBUG_INFO, "Failed to send keepalive packet", "error", err)
 					}
 				}
 
@@ -996,7 +978,7 @@ func (l *Link) SendLinkRequest() error {
 		return fmt.Errorf("failed to send link request: %w", err)
 	}
 
-	log.Printf("[DEBUG-3] Link request sent, link_id=%x", l.linkID)
+	debug.Log(debug.DEBUG_INFO, "Link request sent", "link_id", fmt.Sprintf("%x", l.linkID))
 	return nil
 }
 
@@ -1037,7 +1019,7 @@ func (l *Link) HandleLinkRequest(pkt *packet.Packet, ownerIdentity *identity.Ide
 		mtuBytes := pkt.Data[ECPUBSIZE : ECPUBSIZE+LINK_MTU_SIZE]
 		l.mtu = (int(mtuBytes[0]&0x1F) << 16) | (int(mtuBytes[1]) << 8) | int(mtuBytes[2])
 		l.mode = (mtuBytes[0] & MODE_BYTEMASK) >> 5
-		log.Printf("[DEBUG-4] Link request includes MTU: %d, mode: %d", l.mtu, l.mode)
+		debug.Log(debug.DEBUG_VERBOSE, "Link request includes MTU", "mtu", l.mtu, "mode", l.mode)
 	} else {
 		l.mtu = 500
 		l.mode = MODE_DEFAULT
@@ -1057,7 +1039,7 @@ func (l *Link) HandleLinkRequest(pkt *packet.Packet, ownerIdentity *identity.Ide
 
 	l.status = STATUS_ACTIVE
 	l.establishedAt = time.Now()
-	log.Printf("[DEBUG-3] Link established (responder), link_id=%x", l.linkID)
+	debug.Log(debug.DEBUG_INFO, "Link established (responder)", "link_id", fmt.Sprintf("%x", l.linkID))
 
 	if l.establishedCallback != nil {
 		go l.establishedCallback(l)
@@ -1100,7 +1082,7 @@ func (l *Link) performHandshake() error {
 	}
 
 	l.status = STATUS_HANDSHAKE
-	log.Printf("[DEBUG-4] Handshake completed, derived %d bytes of key material", len(derivedKey))
+	debug.Log(debug.DEBUG_VERBOSE, "Handshake completed", "key_material_bytes", len(derivedKey))
 	return nil
 }
 
@@ -1114,7 +1096,7 @@ func (l *Link) sendLinkProof(ownerIdentity *identity.Identity) error {
 		if err := l.transport.SendPacket(proofPkt); err != nil {
 			return fmt.Errorf("failed to send link proof: %w", err)
 		}
-		log.Printf("[DEBUG-3] Link proof sent, link_id=%x", l.linkID)
+		debug.Log(debug.DEBUG_INFO, "Link proof sent", "link_id", fmt.Sprintf("%x", l.linkID))
 	}
 
 	return nil
@@ -1178,7 +1160,7 @@ func (l *Link) ValidateLinkProof(pkt *packet.Packet) error {
 		mode := (signalling[0] & MODE_BYTEMASK) >> 5
 		l.mtu = mtu
 		l.mode = mode
-		log.Printf("[DEBUG-4] Link proof includes MTU: %d, mode: %d", mtu, mode)
+		debug.Log(debug.DEBUG_VERBOSE, "Link proof includes MTU", "mtu", mtu, "mode", mode)
 	}
 
 	l.peerPub = peerPub
@@ -1212,7 +1194,7 @@ func (l *Link) ValidateLinkProof(pkt *packet.Packet) error {
 	l.status = STATUS_ACTIVE
 	l.establishedAt = time.Now()
 
-	log.Printf("[DEBUG-3] Link established (initiator), link_id=%x, RTT=%.3fs", l.linkID, l.rtt)
+	debug.Log(debug.DEBUG_INFO, "Link established (initiator)", "link_id", fmt.Sprintf("%x", l.linkID), "rtt", fmt.Sprintf("%.3fs", l.rtt))
 
 	if l.establishedCallback != nil {
 		go l.establishedCallback(l)
