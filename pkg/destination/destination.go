@@ -251,18 +251,12 @@ func (d *Destination) GetLinkCallback() common.LinkEstablishedCallback {
 	return d.linkCallback
 }
 
-func (d *Destination) HandleIncomingLinkRequest(linkID []byte, transport interface{}, networkIface common.NetworkInterface) error {
+func (d *Destination) HandleIncomingLinkRequest(pkt interface{}, transport interface{}, networkIface common.NetworkInterface) error {
 	debug.Log(debug.DEBUG_INFO, "Handling incoming link request for destination", "hash", fmt.Sprintf("%x", d.GetHash()))
 	
-	// Import link package here to avoid circular dependency at package level
-	// We'll use dynamic import by having the caller create the link
-	// For now, just call the callback with a placeholder
-	
 	if d.linkCallback != nil {
-		debug.Log(debug.DEBUG_INFO, "Calling link established callback")
-		// Pass linkID as the link object for now
-		// The callback will need to handle creating the actual link
-		d.linkCallback(linkID)
+		debug.Log(debug.DEBUG_INFO, "Calling link established callback with packet")
+		d.linkCallback(pkt)
 	} else {
 		debug.Log(debug.DEBUG_VERBOSE, "No link callback set")
 	}
@@ -391,6 +385,20 @@ func (d *Destination) DeregisterRequestHandler(path string) bool {
 		return true
 	}
 	return false
+}
+
+func (d *Destination) HandleRequest(path string, data []byte, requestID []byte, linkID []byte, remoteIdentity *identity.Identity, requestedAt int64) []byte {
+	d.mutex.RLock()
+	handler, exists := d.requestHandlers[path]
+	d.mutex.RUnlock()
+
+	if !exists {
+		debug.Log(debug.DEBUG_INFO, "No handler registered for path", "path", path)
+		return []byte(">Not Found\n\nThe requested resource was not found.")
+	}
+
+	debug.Log(debug.DEBUG_VERBOSE, "Calling request handler", "path", path)
+	return handler.ResponseGenerator(path, data, requestID, linkID, remoteIdentity, requestedAt)
 }
 
 func (d *Destination) Encrypt(plaintext []byte) ([]byte, error) {
