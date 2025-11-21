@@ -181,9 +181,9 @@ func TestPacketReceiptCallbacks(t *testing.T) {
 	receipt := NewPacketReceipt(pkt)
 	receipt.SetDestinationIdentity(testIdent)
 
-	deliveryCalled := false
+	deliveryCalled := make(chan bool, 1)
 	receipt.SetDeliveryCallback(func(r *PacketReceipt) {
-		deliveryCalled = true
+		deliveryCalled <- true
 	})
 
 	packetHash := pkt.GetHash()
@@ -200,9 +200,10 @@ func TestPacketReceiptCallbacks(t *testing.T) {
 
 	receipt.ValidateProof(proof, proofPacket)
 
-	time.Sleep(10 * time.Millisecond)
-
-	if !deliveryCalled {
+	select {
+	case <-deliveryCalled:
+		// Success
+	case <-time.After(100 * time.Millisecond):
 		t.Error("Delivery callback was not called")
 	}
 }
