@@ -355,6 +355,7 @@ func (a *Announce) CreatePacket() []byte {
 	}
 	// Add 5 bytes of timestamp
 	timeBytes := make([]byte, 8)
+	// #nosec G115 - Unix timestamp is always positive, no overflow risk
 	binary.BigEndian.PutUint64(timeBytes, uint64(time.Now().Unix()))
 	copy(randomHash[5:], timeBytes[:5])
 
