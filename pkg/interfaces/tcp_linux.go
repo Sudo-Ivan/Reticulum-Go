@@ -86,8 +86,8 @@ func platformGetRTT(fd uintptr) time.Duration {
 		fd,
 		syscall.IPPROTO_TCP,
 		11, // TCP_INFO
-		uintptr(unsafe.Pointer(&info)),
-		uintptr(unsafe.Pointer(&infoLen)),
+		uintptr(unsafe.Pointer(&info)),        //nolint:gosec
+		uintptr(unsafe.Pointer(&infoLen)),     //nolint:gosec
 		0,
 	)
 	

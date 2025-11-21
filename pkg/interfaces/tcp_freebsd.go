@@ -20,7 +20,12 @@ func (tc *TCPClientInterface) setTimeoutsLinux() error {
 		return fmt.Errorf("failed to enable keepalive: %v", err)
 	}
 
-	if err := tcpConn.SetKeepAlivePeriod(TCP_PROBE_INTERVAL * time.Second); err != nil {
+	keepalivePeriod := TCP_PROBE_INTERVAL_SEC * time.Second
+	if tc.i2pTunneled {
+		keepalivePeriod = I2P_PROBE_INTERVAL_SEC * time.Second
+	}
+	
+	if err := tcpConn.SetKeepAlivePeriod(keepalivePeriod); err != nil {
 		debug.Log(debug.DEBUG_VERBOSE, "Failed to set keepalive period", "error", err)
 	}
 
