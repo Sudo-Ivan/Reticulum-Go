@@ -6,11 +6,11 @@
 
 # Reticulum-Go
 
-A Go implementation of the [Reticulum Network Protocol](https://github.com/markqvist/Reticulum).
+A Go implementation of the [Reticulum Network Stack](https://github.com/markqvist/Reticulum).
 
 ## Goals
 
-- To be fully compatible with the Python reference implementation.
+- To be fully compatible with the original Python implementation.
 - Additional privacy and security features.
 - Support for a broader range of platforms and architectures legacy and modern.
 
@@ -40,7 +40,9 @@ make test
 
 ## Embedded systems and WebAssembly
 
-For building for WebAssembly and embedded systems, see the [tinygo branch](https://github.com/Sudo-Ivan/Reticulum-Go/tree/tinygo). Requires TinyGo 0.37.0+.
+For building for WebAssembly and embedded systems, see the [tinygo branch](https://github.com/Sudo-Ivan/Reticulum-Go/tree/tinygo). Requires TinyGo 0.37.0+. 
+
+Note: I am not actively working on webassembly support at the moment.
 
 ```bash
 make tinygo-build
