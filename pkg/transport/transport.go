@@ -720,7 +720,7 @@ func (t *Transport) handleAnnouncePacket(data []byte, iface common.NetworkInterf
 	// Skip IFAC code if present
 	startIdx := 2
 	if ifacFlag == 1 {
-		startIdx += 1 // For now assume 1 byte IFAC code
+		startIdx++ // For now assume 1 byte IFAC code
 	}
 
 	// Announce packets use HEADER_TYPE_1 (single address field)
