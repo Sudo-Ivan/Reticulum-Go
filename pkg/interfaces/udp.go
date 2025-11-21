@@ -218,6 +218,7 @@ func (ui *UDPInterface) readLoop() {
 
 		// Update RX stats
 		ui.mutex.Lock()
+		// #nosec G115 - Network read sizes are always positive and within safe range
 		ui.RxBytes += uint64(n)
 		
 		// Auto-discover target address from first packet if not set
