@@ -384,7 +384,7 @@ func (tc *TCPClientInterface) GetRTT() time.Duration {
 	}
 
 	if tcpConn, ok := tc.conn.(*net.TCPConn); ok {
-		var rtt time.Duration = 0
+		var rtt time.Duration
 		if runtime.GOOS == "linux" {
 			if info, err := tcpConn.SyscallConn(); err == nil {
 				if err := info.Control(func(fd uintptr) { // #nosec G104
