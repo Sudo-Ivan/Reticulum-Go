@@ -67,6 +67,7 @@ type Packet struct {
 
 	DestinationType byte
 	DestinationHash []byte
+	Destination     interface{}
 	TransportID     []byte
 	Data            []byte
 
@@ -85,6 +86,9 @@ type Packet struct {
 	Q    *float64
 
 	Addresses []byte
+	Link      interface{}
+	
+	receipt *PacketReceipt
 }
 
 func NewPacket(destType byte, data []byte, packetType byte, context byte,
@@ -219,6 +223,18 @@ func (p *Packet) getHashablePart() []byte {
 
 func (p *Packet) updateHash() {
 	p.PacketHash = p.GetHash()
+}
+
+func (p *Packet) Hash() []byte {
+	return p.GetHash()
+}
+
+func (p *Packet) TruncatedHash() []byte {
+	hash := p.GetHash()
+	if len(hash) >= 16 {
+		return hash[:16]
+	}
+	return hash
 }
 
 func (p *Packet) Serialize() ([]byte, error) {
