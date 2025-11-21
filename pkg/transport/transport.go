@@ -666,6 +666,10 @@ func (t *Transport) HandlePacket(data []byte, iface common.NetworkInterface) {
 	debug.Log(debug.DEBUG_INFO, "TRANSPORT: Packet received", "type", fmt.Sprintf("0x%02x", packetType), "header", headerType, "context", contextFlag, "propType", propType, "destType", destType, "size", len(data))
 	debug.Log(debug.DEBUG_TRACE, "Interface and raw header", "name", iface.GetName(), "header", fmt.Sprintf("0x%02x", headerByte))
 
+	if len(data) == 67 {
+		debug.Log(debug.DEBUG_ERROR, "67-byte packet detected", "header", fmt.Sprintf("0x%02x", headerByte), "packet_type_bits", fmt.Sprintf("0x%02x", packetType), "first_32_bytes", fmt.Sprintf("%x", data[:32]))
+	}
+
 	if tcpIface, ok := iface.(*interfaces.TCPClientInterface); ok {
 		tcpIface.UpdateStats(uint64(len(data)), true)
 		debug.Log(debug.DEBUG_PACKETS, "Updated TCP interface stats", "rx_bytes", len(data))
@@ -678,8 +682,8 @@ func (t *Transport) HandlePacket(data []byte, iface common.NetworkInterface) {
 			debug.Log(debug.DEBUG_INFO, "Announce handling failed", "error", err)
 		}
 	case PACKET_TYPE_LINK:
-		debug.Log(debug.DEBUG_VERBOSE, "Processing link packet")
-		t.handleLinkPacket(data[1:], iface)
+		debug.Log(debug.DEBUG_ERROR, "Processing link packet (type=0x02)", "packet_size", len(data))
+		t.handleLinkPacket(data[1:], iface, PACKET_TYPE_LINK)
 	case packet.PacketTypeProof:
 		debug.Log(debug.DEBUG_VERBOSE, "Processing proof packet")
 		fullData := append([]byte{packet.PacketTypeProof}, data[1:]...)
@@ -690,8 +694,14 @@ func (t *Transport) HandlePacket(data []byte, iface common.NetworkInterface) {
 		}
 		t.handleProofPacket(pkt, iface)
 	case 0x00:
-		debug.Log(debug.DEBUG_VERBOSE, "Processing transport packet")
+		// Data packets with destType=2 are for established links
+		if destType == 2 {
+			debug.Log(debug.DEBUG_ERROR, "Processing link data packet (dest_type=2)", "packet_size", len(data))
+			t.handleLinkPacket(data[1:], iface, 0x00)
+		} else {
+			debug.Log(debug.DEBUG_ERROR, "Processing data packet (type 0x00)", "packet_size", len(data), "dest_type", destType, "header_type", headerType)
 		t.handleTransportPacket(data[1:], iface)
+		}
 	default:
 		debug.Log(debug.DEBUG_INFO, "Unknown packet type", "type", fmt.Sprintf("0x%02x", packetType), "source", iface.GetName())
 	}
@@ -938,14 +948,19 @@ func (t *Transport) handleAnnouncePacket(data []byte, iface common.NetworkInterf
 	return lastErr
 }
 
-func (t *Transport) handleLinkPacket(data []byte, iface common.NetworkInterface) {
-	debug.Log(debug.DEBUG_TRACE, "Handling link packet", "bytes", len(data))
+func (t *Transport) handleLinkPacket(data []byte, iface common.NetworkInterface, packetType byte) {
+	debug.Log(debug.DEBUG_ERROR, "Handling link packet", "bytes", len(data), "packet_type", fmt.Sprintf("0x%02x", packetType), "PACKET_TYPE_LINK", fmt.Sprintf("0x%02x", PACKET_TYPE_LINK))
 	
-	// Parse the packet - need to prepend the packet type byte that was stripped
-	fullData := append([]byte{PACKET_TYPE_LINK}, data...)
-	pkt := &packet.Packet{Raw: fullData}
+	pkt := &packet.Packet{}
+	
+	// If this is a LINKREQUEST packet (type=0x02), handle it as link establishment
+	if packetType == PACKET_TYPE_LINK {
+		debug.Log(debug.DEBUG_ERROR, "Processing LINKREQUEST (type=0x02)")
+		
+		// Parse as LINKREQUEST packet - prepend the packet type
+		pkt.Raw = append([]byte{PACKET_TYPE_LINK}, data...)
 	if err := pkt.Unpack(); err != nil {
-		debug.Log(debug.DEBUG_INFO, "Failed to unpack link packet", "error", err)
+			debug.Log(debug.DEBUG_ERROR, "Failed to unpack link request", "error", err)
 		return
 	}
 
@@ -954,11 +969,7 @@ func (t *Transport) handleLinkPacket(data []byte, iface common.NetworkInterface)
 		destHash = destHash[:16]
 	}
 	
-	debug.Log(debug.DEBUG_TRACE, "Link packet for destination", "hash", fmt.Sprintf("%x", destHash), "context", fmt.Sprintf("0x%02x", pkt.Context))
-
-	// Check if this is a link request (initial link establishment)
-	if pkt.Context == packet.ContextLinkIdentify {
-		debug.Log(debug.DEBUG_VERBOSE, "Received link request for destination", "hash", fmt.Sprintf("%x", destHash))
+		debug.Log(debug.DEBUG_ERROR, "Link request for destination", "hash", fmt.Sprintf("%x", destHash))
 		
 		// Look up the destination
 		t.mutex.RLock()
@@ -966,26 +977,44 @@ func (t *Transport) handleLinkPacket(data []byte, iface common.NetworkInterface)
 		t.mutex.RUnlock()
 		
 		if !exists {
-			debug.Log(debug.DEBUG_INFO, "No destination registered for hash", "hash", fmt.Sprintf("%x", destHash))
+			debug.Log(debug.DEBUG_ERROR, "No destination registered for hash", "hash", fmt.Sprintf("%x", destHash))
 			return
 		}
 		
-		debug.Log(debug.DEBUG_TRACE, "Found registered destination", "hash", fmt.Sprintf("%x", destHash))
+		debug.Log(debug.DEBUG_ERROR, "Found registered destination", "hash", fmt.Sprintf("%x", destHash))
 		
 		// Handle the incoming link request
 		t.handleIncomingLinkRequest(pkt, destIface, iface)
 		return
 	}
 
-	// Handle regular link packets (for established links)
-	if link := t.findLink(destHash); link != nil {
-		debug.Log(debug.DEBUG_PACKETS, "Routing packet to established link")
+	// Otherwise, this is a data packet for an established link (destType=2, packetType=0x00)
+	debug.Log(debug.DEBUG_ERROR, "Processing link data packet")
+	
+	// Parse as data packet - prepend packet type 0x00
+	pkt.Raw = append([]byte{0x00}, data...)
+	if err := pkt.Unpack(); err != nil {
+		debug.Log(debug.DEBUG_ERROR, "Failed to unpack link data packet", "error", err)
+		return
+	}
+	
+	// For link data packets, the destination hash is actually the link ID
+	linkID := pkt.DestinationHash
+	if len(linkID) > 16 {
+		linkID = linkID[:16]
+	}
+	
+	debug.Log(debug.DEBUG_ERROR, "Link data for link ID", "link_id", fmt.Sprintf("%x", linkID))
+	
+	// Find the established link
+	if link := t.findLink(linkID); link != nil {
+		debug.Log(debug.DEBUG_ERROR, "Routing packet to established link")
 		if link.packetCb != nil {
-			debug.Log(debug.DEBUG_ALL, "Executing packet callback", "bytes", len(pkt.Data))
+			debug.Log(debug.DEBUG_ERROR, "Executing packet callback", "bytes", len(pkt.Data))
 			link.packetCb(pkt.Data, pkt)
 		}
 	} else {
-		debug.Log(debug.DEBUG_TRACE, "No established link found for destination", "hash", fmt.Sprintf("%x", destHash))
+		debug.Log(debug.DEBUG_ERROR, "No established link found for link ID", "link_id", fmt.Sprintf("%x", linkID))
 	}
 }
 
@@ -1001,30 +1030,30 @@ func (t *Transport) handleIncomingLinkRequest(pkt *packet.Packet, destIface inte
 	
 	debug.Log(debug.DEBUG_TRACE, "Link request with ID", "id", fmt.Sprintf("%x", linkID[:8]))
 	
-	// Call the destination's link established callback directly
-	// Use reflection to call the method if it exists
+	// Call the destination's HandleIncomingLinkRequest method
 	destValue := reflect.ValueOf(destIface)
 	if destValue.IsValid() && !destValue.IsNil() {
-		// Try to call GetLinkCallback method
-		method := destValue.MethodByName("GetLinkCallback")
+		method := destValue.MethodByName("HandleIncomingLinkRequest")
 		if method.IsValid() {
-			results := method.Call(nil)
+			// HandleIncomingLinkRequest(pkt interface{}, transport interface{}, networkIface common.NetworkInterface) error
+			args := []reflect.Value{
+				reflect.ValueOf(pkt),
+				reflect.ValueOf(t),
+				reflect.ValueOf(networkIface),
+			}
+			results := method.Call(args)
 			if len(results) > 0 && !results[0].IsNil() {
-				// The callback is of type common.LinkEstablishedCallback which is func(interface{})
-				callback := results[0].Interface().(common.LinkEstablishedCallback)
-				debug.Log(debug.DEBUG_VERBOSE, "Calling destination's link established callback")
-				callback(linkID)
+				err := results[0].Interface().(error)
+				debug.Log(debug.DEBUG_ERROR, "Failed to handle incoming link request", "error", err)
 			} else {
-				debug.Log(debug.DEBUG_TRACE, "No link established callback set on destination")
+				debug.Log(debug.DEBUG_VERBOSE, "Link request handled successfully by destination")
 			}
 		} else {
-			debug.Log(debug.DEBUG_INFO, "Destination does not have GetLinkCallback method")
+			debug.Log(debug.DEBUG_INFO, "Destination does not have HandleIncomingLinkRequest method")
 		}
 	} else {
 		debug.Log(debug.DEBUG_INFO, "Invalid destination object")
 	}
-	
-	debug.Log(debug.DEBUG_VERBOSE, "Link request handled successfully")
 }
 
 func (t *Transport) handlePathResponse(data []byte, iface common.NetworkInterface) {
