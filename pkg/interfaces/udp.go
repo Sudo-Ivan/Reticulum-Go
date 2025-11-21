@@ -36,10 +36,9 @@ func NewUDPInterface(name string, addr string, target string, enabled bool) (*UD
 		BaseInterface: NewBaseInterface(name, common.IF_TYPE_UDP, enabled),
 		addr:          udpAddr,
 		targetAddr:    targetAddr,
-		readBuffer:    make([]byte, 1064), // Python RNS uses 1064 bytes for UDP MTU
+		readBuffer:    make([]byte, 1064),
 	}
 	
-	// Set MTU to match Python RNS
 	ui.MTU = 1064
 
 	return ui, nil
@@ -186,7 +185,6 @@ func (ui *UDPInterface) Start() error {
 	ui.conn = conn
 	
 	// Enable broadcast mode if we have a target address
-	// This matches Python RNS UDP interface behavior
 	if ui.targetAddr != nil {
 		// Get the raw connection file descriptor to set SO_BROADCAST
 		if err := conn.SetReadBuffer(1064); err != nil {
@@ -206,7 +204,7 @@ func (ui *UDPInterface) Start() error {
 }
 
 func (ui *UDPInterface) readLoop() {
-	buffer := make([]byte, 1064) // Match Python RNS UDP MTU
+	buffer := make([]byte, 1064)
 	for ui.IsOnline() && !ui.IsDetached() {
 		n, remoteAddr, err := ui.conn.ReadFromUDP(buffer)
 		if err != nil {
