@@ -81,13 +81,14 @@ func platformGetRTT(fd uintptr) time.Duration {
 	infoLen := uint32(unsafe.Sizeof(info))
 	
 	// TCP_INFO is 11 on Linux
+	// #nosec G103
 	_, _, errno := syscall.Syscall6(
 		syscall.SYS_GETSOCKOPT,
 		fd,
 		syscall.IPPROTO_TCP,
 		11, // TCP_INFO
-		uintptr(unsafe.Pointer(&info)),        //nolint:gosec
-		uintptr(unsafe.Pointer(&infoLen)),     //nolint:gosec
+		uintptr(unsafe.Pointer(&info)),
+		uintptr(unsafe.Pointer(&infoLen)),
 		0,
 	)
 	
