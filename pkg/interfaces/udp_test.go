@@ -25,11 +25,6 @@ func TestNewUDPInterface(t *testing.T) {
 		if ui.GetType() != common.IF_TYPE_UDP {
 			t.Errorf("GetType() = %v; want %v", ui.GetType(), common.IF_TYPE_UDP)
 		}
-		if ui.addr.String() != validAddr && ui.addr.Port == 0 { // Check if address resolved, port 0 is special
-			// Allow OS-assigned port if 0 was specified
-		} else if ui.addr.String() != validAddr {
-			// t.Errorf("Resolved addr = %s; want %s", ui.addr.String(), validAddr) //This check is flaky with port 0
-		}
 		if ui.targetAddr.String() != validTarget {
 			t.Errorf("Resolved targetAddr = %s; want %s", ui.targetAddr.String(), validTarget)
 		}
