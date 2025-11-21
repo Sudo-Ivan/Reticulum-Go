@@ -277,7 +277,7 @@ func main() {
 		cfg.Interfaces["Quad4 TCP"] = &common.InterfaceConfig{
 			Type:       "TCPClientInterface",
 			Enabled:    true,
-			TargetHost: "rns.quad4.io",
+			TargetHost: "rns2.quad4.io",
 			TargetPort: 4242,
 			Name:       "Quad4 TCP",
 		}
