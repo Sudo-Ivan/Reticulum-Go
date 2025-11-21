@@ -302,11 +302,7 @@ func (a *Announce) RequestPath(destHash []byte, onInterface common.NetworkInterf
 	packet = append(packet, byte(0)) // Initial hop count
 
 	// Send path request
-	if err := onInterface.Send(packet, ""); err != nil {
-		return err
-	}
-
-	return nil
+	return onInterface.Send(packet, "")
 }
 
 // CreateHeader creates a Reticulum packet header according to spec
