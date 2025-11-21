@@ -110,7 +110,7 @@ func (r *RawChannelReader) Read(p []byte) (n int, err error) {
 	if err == io.EOF && !r.eof {
 		err = nil
 	}
-	return
+	return n, err
 }
 
 func (r *RawChannelReader) HandleMessage(msg channel.MessageBase) bool { // #nosec G115
@@ -201,10 +201,7 @@ func (b *Buffer) Read(p []byte) (n int, err error) {
 }
 
 func (b *Buffer) Close() error {
-	if err := b.ReadWriter.Writer.Flush(); err != nil {
-		return err
-	}
-	return nil
+	return b.ReadWriter.Writer.Flush()
 }
 
 func CreateReader(streamID int, ch *channel.Channel, readyCallback func(int)) *bufio.Reader {
