@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net"
 	"syscall"
-	"time"
 
 	"github.com/Sudo-Ivan/reticulum-go/pkg/debug"
 )
@@ -56,9 +55,5 @@ func (tc *TCPClientInterface) setTimeoutsOSX() error {
 
 	debug.Log(debug.DEBUG_VERBOSE, "TCP keepalive configured (OSX)", "i2p", tc.i2pTunneled)
 	return nil
-}
-
-func platformGetRTT(fd uintptr) time.Duration {
-	return 0
 }
 

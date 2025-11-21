@@ -37,7 +37,3 @@ func (tc *TCPClientInterface) setTimeoutsOSX() error {
 	return tc.setTimeoutsLinux()
 }
 
-func platformGetRTT(fd uintptr) time.Duration {
-	return 0
-}
-

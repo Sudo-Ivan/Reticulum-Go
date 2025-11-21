@@ -39,7 +39,4 @@ func (tc *TCPClientInterface) setTimeoutsWindows() error {
 	return nil
 }
 
-func platformGetRTT(fd uintptr) time.Duration {
-	return 0
-}
 
