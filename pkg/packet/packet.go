@@ -6,9 +6,9 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"log"
 	"time"
 
+	"github.com/Sudo-Ivan/reticulum-go/pkg/debug"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/identity"
 )
 
@@ -91,6 +91,18 @@ type Packet struct {
 	receipt *PacketReceipt
 }
 
+type PacketConfig struct {
+	DestType      byte
+	Data          []byte
+	PacketType    byte
+	Context       byte
+	TransportType byte
+	HeaderType    byte
+	TransportID   []byte
+	CreateReceipt bool
+	ContextFlag   byte
+}
+
 func NewPacket(destType byte, data []byte, packetType byte, context byte,
 	transportType byte, headerType byte, transportID []byte, createReceipt bool,
 	contextFlag byte) *Packet {
@@ -117,7 +129,7 @@ func (p *Packet) Pack() error {
 		return nil
 	}
 
-	log.Printf("[DEBUG-6] Packing packet: type=%d, header=%d", p.PacketType, p.HeaderType)
+	debug.Log(debug.DEBUG_PACKETS, "Packing packet", "type", p.PacketType, "header", p.HeaderType)
 
 	// Create header byte (Corrected order)
 	flags := byte(0)
@@ -128,7 +140,7 @@ func (p *Packet) Pack() error {
 	flags |= p.PacketType & 0b00000011
 
 	header := []byte{flags, p.Hops}
-	log.Printf("[DEBUG-5] Created packet header: flags=%08b, hops=%d", flags, p.Hops)
+	debug.Log(debug.DEBUG_TRACE, "Created packet header", "flags", fmt.Sprintf("%08b", flags), "hops", p.Hops)
 
 	header = append(header, p.DestinationHash...)
 	
@@ -137,14 +149,14 @@ func (p *Packet) Pack() error {
 			return errors.New("transport ID required for header type 2")
 		}
 		header = append(header, p.TransportID...)
-		log.Printf("[DEBUG-7] Added transport ID to header: %x", p.TransportID)
+		debug.Log(debug.DEBUG_ALL, "Added transport ID to header", "transport_id", fmt.Sprintf("%x", p.TransportID))
 	}
 
 	header = append(header, p.Context)
-	log.Printf("[DEBUG-6] Final header length: %d bytes", len(header))
+	debug.Log(debug.DEBUG_PACKETS, "Final header length", "bytes", len(header))
 
 	p.Raw = append(header, p.Data...)
-	log.Printf("[DEBUG-5] Final packet size: %d bytes", len(p.Raw))
+	debug.Log(debug.DEBUG_TRACE, "Final packet size", "bytes", len(p.Raw))
 
 	if len(p.Raw) > MTU {
 		return errors.New("packet size exceeds MTU")
@@ -152,7 +164,7 @@ func (p *Packet) Pack() error {
 
 	p.Packed = true
 	p.updateHash()
-	log.Printf("[DEBUG-7] Packet hash: %x", p.PacketHash)
+	debug.Log(debug.DEBUG_ALL, "Packet hash", "hash", fmt.Sprintf("%x", p.PacketHash))
 	return nil
 }
 
@@ -250,13 +262,13 @@ func (p *Packet) Serialize() ([]byte, error) {
 }
 
 func NewAnnouncePacket(destHash []byte, identity *identity.Identity, appData []byte, transportID []byte) (*Packet, error) {
-	log.Printf("[DEBUG-7] Creating new announce packet: destHash=%x, appData=%s", destHash, fmt.Sprintf("%x", appData))
+	debug.Log(debug.DEBUG_ALL, "Creating new announce packet", "dest_hash", fmt.Sprintf("%x", destHash), "app_data", fmt.Sprintf("%x", appData))
 
 	// Get public key separated into encryption and signing keys
 	pubKey := identity.GetPublicKey()
 	encKey := pubKey[:32]
 	signKey := pubKey[32:]
-	log.Printf("[DEBUG-6] Using public keys: encKey=%x, signKey=%x", encKey, signKey)
+	debug.Log(debug.DEBUG_PACKETS, "Using public keys", "enc_key", fmt.Sprintf("%x", encKey), "sign_key", fmt.Sprintf("%x", signKey))
 
 	// Parse app name from first msgpack element if possible
 	// For nodes, we'll use "reticulum.node" as the name hash
@@ -281,19 +293,19 @@ func NewAnnouncePacket(destHash []byte, identity *identity.Identity, appData []b
 	// Create name hash (10 bytes)
 	nameHash := sha256.Sum256([]byte(appName))
 	nameHash10 := nameHash[:10]
-	log.Printf("[DEBUG-6] Using name hash for '%s': %x", appName, nameHash10)
+	debug.Log(debug.DEBUG_PACKETS, "Using name hash", "name", appName, "hash", fmt.Sprintf("%x", nameHash10))
 
 	// Create random hash (10 bytes) - 5 bytes random + 5 bytes time
 	randomHash := make([]byte, 10)
 	_, err := rand.Read(randomHash[:5]) // #nosec G104
 	if err != nil {
-		log.Printf("[DEBUG-6] Failed to read random bytes for hash: %v", err)
+		debug.Log(debug.DEBUG_PACKETS, "Failed to read random bytes for hash", "error", err)
 		return nil, err // Or handle the error appropriately
 	}
 	timeBytes := make([]byte, 8)
 	binary.BigEndian.PutUint64(timeBytes, uint64(time.Now().Unix())) // #nosec G115
 	copy(randomHash[5:], timeBytes[:5])
-	log.Printf("[DEBUG-6] Generated random hash: %x", randomHash)
+	debug.Log(debug.DEBUG_PACKETS, "Generated random hash", "hash", fmt.Sprintf("%x", randomHash))
 
 	// Prepare ratchet ID if available (not yet implemented)
 	var ratchetID []byte
@@ -307,11 +319,11 @@ func NewAnnouncePacket(destHash []byte, identity *identity.Identity, appData []b
 	signedData = append(signedData, nameHash10...)
 	signedData = append(signedData, randomHash...)
 	signedData = append(signedData, appData...)
-	log.Printf("[DEBUG-5] Created signed data (%d bytes)", len(signedData))
+	debug.Log(debug.DEBUG_TRACE, "Created signed data", "bytes", len(signedData))
 
 	// Sign the data
 	signature := identity.Sign(signedData)
-	log.Printf("[DEBUG-6] Generated signature: %x", signature)
+	debug.Log(debug.DEBUG_PACKETS, "Generated signature", "signature", fmt.Sprintf("%x", signature))
 
 	// Combine all fields according to spec
 	// Data structure: Public Key (32) + Signing Key (32) + Name Hash (10) + Random Hash (10) + Ratchet (optional) + Signature (64) + App Data
@@ -326,7 +338,7 @@ func NewAnnouncePacket(destHash []byte, identity *identity.Identity, appData []b
 	data = append(data, signature...) // Signature (64 bytes)
 	data = append(data, appData...)   // Application data (variable)
 
-	log.Printf("[DEBUG-5] Combined packet data (%d bytes)", len(data))
+	debug.Log(debug.DEBUG_TRACE, "Combined packet data", "bytes", len(data))
 
 	// Create the packet with header type 2 (two address fields)
 	p := &Packet{
@@ -337,6 +349,6 @@ func NewAnnouncePacket(destHash []byte, identity *identity.Identity, appData []b
 		Data:            data,
 	}
 
-	log.Printf("[DEBUG-4] Created announce packet: type=%d, header=%d", p.PacketType, p.HeaderType)
+	debug.Log(debug.DEBUG_VERBOSE, "Created announce packet", "type", p.PacketType, "header", p.HeaderType)
 	return p, nil
 }
