@@ -2,11 +2,11 @@ package channel
 
 import (
 	"errors"
-	"log"
 	"math"
 	"sync"
 	"time"
 
+	"github.com/Sudo-Ivan/reticulum-go/pkg/debug"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/transport"
 )
 
@@ -141,7 +141,7 @@ func (c *Channel) handleTimeout(packet interface{}) {
 			env.Tries++
 			if err := c.link.Resend(packet); err != nil { // #nosec G104
 				// Handle resend error, e.g., log it or mark envelope as failed
-				log.Printf("Failed to resend packet: %v", err)
+				debug.Log(debug.DEBUG_INFO, "Failed to resend packet", "error", err)
 				// Optionally, mark the envelope as failed or remove it from txRing
 				// env.State = MsgStateFailed
 				// c.txRing = append(c.txRing[:i], c.txRing[i+1:]...)
