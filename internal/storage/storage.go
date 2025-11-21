@@ -100,7 +100,7 @@ func (m *Manager) SaveRatchet(identityHash []byte, ratchetKey []byte) error {
 	}
 
 	if err := os.Rename(outPath, finalPath); err != nil {
-		os.Remove(outPath)
+		_ = os.Remove(outPath)
 		return fmt.Errorf("failed to move ratchet file: %w", err)
 	}
 
@@ -136,7 +136,7 @@ func (m *Manager) LoadRatchets(identityHash []byte) (map[string][]byte, error) {
 		}
 
 		filePath := filepath.Join(ratchetDir, entry.Name())
-		data, err := os.ReadFile(filePath)
+		data, err := os.ReadFile(filePath) // #nosec G304 - reading from controlled directory
 		if err != nil {
 			debug.Log(debug.DEBUG_ERROR, "Failed to read ratchet file", "file", entry.Name(), "error", err)
 			continue
@@ -145,13 +145,13 @@ func (m *Manager) LoadRatchets(identityHash []byte) (map[string][]byte, error) {
 		var ratchetData RatchetData
 		if err := msgpack.Unmarshal(data, &ratchetData); err != nil {
 			debug.Log(debug.DEBUG_ERROR, "Corrupted ratchet data", "file", entry.Name(), "error", err)
-			os.Remove(filePath)
+			_ = os.Remove(filePath)
 			continue
 		}
 
 		if now > ratchetData.Received+expiry {
 			debug.Log(debug.DEBUG_VERBOSE, "Removing expired ratchet", "file", entry.Name())
-			os.Remove(filePath)
+			_ = os.Remove(filePath)
 			continue
 		}
 
