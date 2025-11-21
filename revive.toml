@@ -5,7 +5,9 @@ errorCode = 1
 warningCode = 0
 
 [rule.add-constant]
+[rule.exported]
 [rule.argument-limit]
+  arguments = [10]
 [rule.atomic]
 [rule.bare-return]
 [rule.blank-imports]
@@ -23,7 +25,6 @@ warningCode = 0
 [rule.error-return]
 [rule.error-strings]
 [rule.errorf]
-[rule.exported]
 [rule.if-return]
 [rule.increment-decrement]
 [rule.indent-error-flow]
