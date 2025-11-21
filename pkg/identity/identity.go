@@ -544,14 +544,18 @@ func (i *Identity) saveRatchets(path string) error {
 	}
 
 	if _, err := file.Write(finalData); err != nil {
+		// #nosec G104 - Error already being handled, cleanup errors are non-critical
 		file.Close()
+		// #nosec G104 - Error already being handled, cleanup errors are non-critical
 		os.Remove(tempPath)
 		return fmt.Errorf("failed to write ratchet data: %w", err)
 	}
+	// #nosec G104 - File is being closed after successful write, error is non-critical
 	file.Close()
 
 	// Atomic rename
 	if err := os.Rename(tempPath, path); err != nil {
+		// #nosec G104 - Error already being handled, cleanup errors are non-critical
 		os.Remove(tempPath)
 		return fmt.Errorf("failed to rename ratchet file: %w", err)
 	}
