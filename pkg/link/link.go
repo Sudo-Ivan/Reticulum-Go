@@ -145,6 +145,29 @@ func NewLink(dest *destination.Destination, transport *transport.Transport, netw
 	}
 }
 
+func HandleIncomingLinkRequest(pkt *packet.Packet, dest *destination.Destination, transport *transport.Transport, networkIface common.NetworkInterface) (*Link, error) {
+	debug.Log(debug.DEBUG_INFO, "Creating link for incoming request", "dest_hash", fmt.Sprintf("%x", dest.GetHash()))
+	
+	l := NewLink(dest, transport, networkIface, nil, nil)
+	l.status = STATUS_PENDING
+	l.initiator = false // This is a responder link
+	
+	ownerIdentity := dest.GetIdentity()
+	if ownerIdentity == nil {
+		return nil, errors.New("destination has no identity")
+	}
+	
+	if err := l.HandleLinkRequest(pkt, ownerIdentity); err != nil {
+		debug.Log(debug.DEBUG_ERROR, "Failed to handle link request", "error", err)
+		return nil, err
+	}
+	
+	go l.startWatchdog()
+	
+	debug.Log(debug.DEBUG_INFO, "Link established for incoming request", "link_id", fmt.Sprintf("%x", l.linkID))
+	return l, nil
+}
+
 func (l *Link) Establish() error {
 	l.mutex.Lock()
 	defer l.mutex.Unlock()
@@ -676,6 +699,12 @@ func (l *Link) GetStatus() byte {
 	return l.status
 }
 
+func (l *Link) GetLinkID() []byte {
+	l.mutex.RLock()
+	defer l.mutex.RUnlock()
+	return l.linkID
+}
+
 func (l *Link) IsActive() bool {
 	return l.GetStatus() == STATUS_ACTIVE
 }
@@ -1087,11 +1116,31 @@ func (l *Link) performHandshake() error {
 }
 
 func (l *Link) sendLinkProof(ownerIdentity *identity.Identity) error {
+	debug.Log(debug.DEBUG_ERROR, "Generating link proof", "link_id", fmt.Sprintf("%x", l.linkID), "initiator", l.initiator, "has_interface", l.networkInterface != nil)
+	
 	proofPkt, err := l.GenerateLinkProof(ownerIdentity)
 	if err != nil {
 		return err
 	}
 
+	debug.Log(debug.DEBUG_ERROR, "Link proof packet created", "dest_hash", fmt.Sprintf("%x", proofPkt.DestinationHash), "packet_type", fmt.Sprintf("0x%02x", proofPkt.PacketType))
+
+	// For responder links (not initiator), send proof directly through the receiving interface
+	if !l.initiator && l.networkInterface != nil {
+		if err := proofPkt.Pack(); err != nil {
+			return fmt.Errorf("failed to pack proof packet: %w", err)
+		}
+		
+		debug.Log(debug.DEBUG_ERROR, "Sending proof through interface", "raw_len", len(proofPkt.Raw), "interface", l.networkInterface.GetName())
+		
+		if err := l.networkInterface.Send(proofPkt.Raw, ""); err != nil {
+			return fmt.Errorf("failed to send link proof through interface: %w", err)
+		}
+		debug.Log(debug.DEBUG_ERROR, "Link proof sent through interface", "link_id", fmt.Sprintf("%x", l.linkID), "interface", l.networkInterface.GetName())
+		return nil
+	}
+
+	// For initiator links, use transport (path lookup)
 	if l.transport != nil {
 		if err := l.transport.SendPacket(proofPkt); err != nil {
 			return fmt.Errorf("failed to send link proof: %w", err)
