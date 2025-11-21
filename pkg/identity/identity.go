@@ -499,6 +499,73 @@ func (i *Identity) ToFile(path string) error {
 	return nil
 }
 
+func FromFile(path string) (*Identity, error) {
+	debug.Log(debug.DEBUG_ALL, "Loading identity from file", "path", path)
+
+	// Read the private key bytes from file
+	data, err := os.ReadFile(path) // #nosec G304
+	if err != nil {
+		return nil, fmt.Errorf("failed to read identity file: %w", err)
+	}
+
+	if len(data) != 64 {
+		return nil, fmt.Errorf("invalid identity file: expected 64 bytes, got %d", len(data))
+	}
+
+	// Parse the private keys
+	// Format: [X25519 PrivKey (32 bytes)][Ed25519 PrivKey (32 bytes)]
+	privateKey := data[:32]
+	signingSeed := data[32:64]
+
+	// Create identity with initialized maps and mutex
+	ident := &Identity{
+		ratchets:      make(map[string][]byte),
+		ratchetExpiry: make(map[string]int64),
+		mutex:         &sync.RWMutex{},
+	}
+	
+	if err := ident.loadPrivateKey(privateKey, signingSeed); err != nil {
+		return nil, fmt.Errorf("failed to load private key: %w", err)
+	}
+
+	debug.Log(debug.DEBUG_INFO, "Identity loaded from file", "hash", ident.GetHexHash())
+	return ident, nil
+}
+
+func (i *Identity) loadPrivateKey(privateKey, signingSeed []byte) error {
+	if len(privateKey) != 32 || len(signingSeed) != 32 {
+		return errors.New("invalid private key length")
+	}
+
+	// Load X25519 private key
+	i.privateKey = make([]byte, 32)
+	copy(i.privateKey, privateKey)
+
+	// Load Ed25519 signing seed
+	i.signingSeed = make([]byte, 32)
+	copy(i.signingSeed, signingSeed)
+
+	// Derive public keys from private keys
+	var err error
+	i.publicKey, err = curve25519.X25519(i.privateKey, curve25519.Basepoint)
+	if err != nil {
+		return fmt.Errorf("failed to derive X25519 public key: %w", err)
+	}
+
+	signingKey := ed25519.NewKeyFromSeed(i.signingSeed)
+	i.verificationKey = signingKey.Public().(ed25519.PublicKey)
+
+	// Update hash
+	publicKeyBytes := make([]byte, 0, len(i.publicKey)+len(i.verificationKey))
+	publicKeyBytes = append(publicKeyBytes, i.publicKey...)
+	publicKeyBytes = append(publicKeyBytes, i.verificationKey...)
+	i.hash = TruncatedHash(publicKeyBytes)[:TRUNCATED_HASHLENGTH/8]
+	i.hexHash = hex.EncodeToString(i.hash)
+
+	debug.Log(debug.DEBUG_VERBOSE, "Private key loaded successfully", "hash", i.GetHexHash())
+	return nil
+}
+
 func (i *Identity) saveRatchets(path string) error {
 	i.mutex.RLock()
 	defer i.mutex.RUnlock()
