@@ -1007,14 +1007,22 @@ func (t *Transport) handleLinkPacket(data []byte, iface common.NetworkInterface,
 	debug.Log(debug.DEBUG_ERROR, "Link data for link ID", "link_id", fmt.Sprintf("%x", linkID))
 	
 	// Find the established link
-	if link := t.findLink(linkID); link != nil {
-		debug.Log(debug.DEBUG_ERROR, "Routing packet to established link")
-		if link.packetCb != nil {
-			debug.Log(debug.DEBUG_ERROR, "Executing packet callback", "bytes", len(pkt.Data))
+	t.mutex.RLock()
+	link, exists := t.links[string(linkID)]
+	t.mutex.RUnlock()
+	
+	if exists && link != nil {
+		debug.Log(debug.DEBUG_VERBOSE, "Routing packet to established link")
+		if linkObj, ok := link.(interface{ HandleInbound(*packet.Packet) error }); ok {
+			if err := linkObj.HandleInbound(pkt); err != nil {
+				debug.Log(debug.DEBUG_ERROR, "Error handling inbound packet", "error", err)
+			}
+		} else if link.packetCb != nil {
+			debug.Log(debug.DEBUG_VERBOSE, "Executing packet callback", "bytes", len(pkt.Data))
 			link.packetCb(pkt.Data, pkt)
 		}
 	} else {
-		debug.Log(debug.DEBUG_ERROR, "No established link found for link ID", "link_id", fmt.Sprintf("%x", linkID))
+		debug.Log(debug.DEBUG_INFO, "No established link found for link ID", "link_id", fmt.Sprintf("%x", linkID))
 	}
 }
 
@@ -1152,6 +1160,28 @@ func (t *Transport) GetLink(destHash []byte) (*Link, error) {
 	}
 
 	return link, nil
+}
+
+func (t *Transport) RegisterLink(linkID []byte, link interface{}) {
+	t.mutex.Lock()
+	defer t.mutex.Unlock()
+	
+	if len(linkID) > 16 {
+		linkID = linkID[:16]
+	}
+	t.links[string(linkID)] = link
+	debug.Log(debug.DEBUG_VERBOSE, "Registered link", "link_id", fmt.Sprintf("%x", linkID))
+}
+
+func (t *Transport) UnregisterLink(linkID []byte) {
+	t.mutex.Lock()
+	defer t.mutex.Unlock()
+	
+	if len(linkID) > 16 {
+		linkID = linkID[:16]
+	}
+	delete(t.links, string(linkID))
+	debug.Log(debug.DEBUG_VERBOSE, "Unregistered link", "link_id", fmt.Sprintf("%x", linkID))
 }
 
 func (l *Link) OnConnected(cb func()) {
@@ -1426,7 +1456,31 @@ func (t *Transport) UnregisterReceipt(receipt *packet.PacketReceipt) {
 }
 
 func (t *Transport) handleProofPacket(pkt *packet.Packet, iface common.NetworkInterface) {
-	debug.Log(debug.DEBUG_PACKETS, "Processing proof packet", "size", len(pkt.Data))
+	debug.Log(debug.DEBUG_PACKETS, "Processing proof packet", "size", len(pkt.Data), "context", fmt.Sprintf("0x%02x", pkt.Context))
+	
+	if pkt.Context == packet.ContextLRProof {
+		linkID := pkt.DestinationHash
+		if len(linkID) > 16 {
+			linkID = linkID[:16]
+		}
+		
+		t.mutex.RLock()
+		link, exists := t.links[string(linkID)]
+		t.mutex.RUnlock()
+		
+		if exists && link != nil {
+			if linkObj, ok := link.(interface{ ValidateLinkProof(*packet.Packet) error }); ok {
+				if err := linkObj.ValidateLinkProof(pkt); err != nil {
+					debug.Log(debug.DEBUG_ERROR, "Link proof validation failed", "error", err)
+				} else {
+					debug.Log(debug.DEBUG_INFO, "Link proof validated successfully")
+				}
+				return
+			}
+		}
+		debug.Log(debug.DEBUG_INFO, "No link found for proof packet", "link_id", fmt.Sprintf("%x", linkID))
+		return
+	}
 	
 	var proofHash []byte
 	if len(pkt.Data) == packet.EXPL_LENGTH {
