@@ -14,6 +14,8 @@ import (
 	"github.com/Sudo-Ivan/reticulum-go/pkg/common"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/debug"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/identity"
+	"github.com/Sudo-Ivan/reticulum-go/pkg/link"
+	"github.com/Sudo-Ivan/reticulum-go/pkg/packet"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/transport"
 	"github.com/vmihailenco/msgpack/v5"
 	"golang.org/x/crypto/curve25519"
@@ -50,9 +52,10 @@ type LinkEstablishedCallback = common.LinkEstablishedCallback
 
 type RequestHandler struct {
 	Path              string
-	ResponseGenerator func(path string, data []byte, requestID []byte, linkID []byte, remoteIdentity *identity.Identity, requestedAt int64) []byte
+	ResponseGenerator func(pathHash []byte, data []byte, requestID []byte, remoteIdentity *identity.Identity, requestedAt time.Time) interface{}
 	AllowMode         byte
 	AllowedList       [][]byte
+	AutoCompress      bool
 }
 
 type Destination struct {
@@ -254,11 +257,24 @@ func (d *Destination) GetLinkCallback() common.LinkEstablishedCallback {
 func (d *Destination) HandleIncomingLinkRequest(pkt interface{}, transport interface{}, networkIface common.NetworkInterface) error {
 	debug.Log(debug.DEBUG_INFO, "Handling incoming link request for destination", "hash", fmt.Sprintf("%x", d.GetHash()))
 	
-	if d.linkCallback != nil {
-		debug.Log(debug.DEBUG_INFO, "Calling link established callback with packet")
-		d.linkCallback(pkt)
-	} else {
-		debug.Log(debug.DEBUG_VERBOSE, "No link callback set")
+	pktObj, ok := pkt.(*packet.Packet)
+	if !ok {
+		return errors.New("invalid packet type")
+	}
+	
+	transportObj, ok := transport.(*transport.Transport)
+	if !ok {
+		return errors.New("invalid transport type")
+	}
+	
+	link, err := link.HandleIncomingLinkRequest(pktObj, d, transportObj, networkIface)
+	if err != nil {
+		return fmt.Errorf("failed to handle link request: %w", err)
+	}
+	
+	if d.linkCallback != nil && link != nil {
+		debug.Log(debug.DEBUG_INFO, "Calling link established callback")
+		d.linkCallback(link)
 	}
 	
 	return nil
@@ -385,6 +401,38 @@ func (d *Destination) DeregisterRequestHandler(path string) bool {
 		return true
 	}
 	return false
+}
+
+func (d *Destination) GetRequestHandler(pathHash []byte) func([]byte, []byte, []byte, *identity.Identity, time.Time) interface{} {
+	d.mutex.RLock()
+	defer d.mutex.RUnlock()
+
+	for _, handler := range d.requestHandlers {
+		handlerPathHash := identity.TruncatedHash([]byte(handler.Path))
+		if string(handlerPathHash) == string(pathHash) {
+			return func(pathHash []byte, data []byte, requestID []byte, remoteIdentity *identity.Identity, requestedAt time.Time) interface{} {
+				allowed := false
+				if handler.AllowMode == ALLOW_ALL {
+					allowed = true
+				} else if handler.AllowMode == ALLOW_LIST && remoteIdentity != nil {
+					remoteHash := remoteIdentity.GetHash()
+					for _, allowedHash := range handler.AllowedList {
+						if string(remoteHash) == string(allowedHash) {
+							allowed = true
+							break
+						}
+					}
+				}
+
+				if !allowed {
+					return nil
+				}
+
+				return handler.ResponseGenerator(pathHash, data, requestID, remoteIdentity, requestedAt)
+			}
+		}
+	}
+	return nil
 }
 
 func (d *Destination) HandleRequest(path string, data []byte, requestID []byte, linkID []byte, remoteIdentity *identity.Identity, requestedAt int64) []byte {
