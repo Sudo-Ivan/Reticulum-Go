@@ -14,9 +14,7 @@ import (
 	"github.com/Sudo-Ivan/reticulum-go/pkg/common"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/debug"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/identity"
-	"github.com/Sudo-Ivan/reticulum-go/pkg/link"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/packet"
-	"github.com/Sudo-Ivan/reticulum-go/pkg/transport"
 	"github.com/vmihailenco/msgpack/v5"
 	"golang.org/x/crypto/curve25519"
 )
@@ -52,10 +50,24 @@ type LinkEstablishedCallback = common.LinkEstablishedCallback
 
 type RequestHandler struct {
 	Path              string
-	ResponseGenerator func(pathHash []byte, data []byte, requestID []byte, remoteIdentity *identity.Identity, requestedAt time.Time) interface{}
+	ResponseGenerator func(path string, data []byte, requestID []byte, linkID []byte, remoteIdentity *identity.Identity, requestedAt int64) []byte
 	AllowMode         byte
 	AllowedList       [][]byte
 	AutoCompress      bool
+}
+
+type Transport interface {
+	GetConfig() *common.ReticulumConfig
+	GetInterfaces() map[string]common.NetworkInterface
+	RegisterDestination(hash []byte, dest interface{})
+}
+
+type IncomingLinkHandler func(pkt *packet.Packet, dest *Destination, transport interface{}, networkIface common.NetworkInterface) (interface{}, error)
+
+var incomingLinkHandler IncomingLinkHandler
+
+func RegisterIncomingLinkHandler(handler IncomingLinkHandler) {
+	incomingLinkHandler = handler
 }
 
 type Destination struct {
@@ -65,7 +77,7 @@ type Destination struct {
 	appName   string
 	aspects   []string
 	hashValue []byte
-	transport *transport.Transport
+	transport Transport
 
 	acceptsLinks  bool
 	proofStrategy byte
@@ -74,15 +86,15 @@ type Destination struct {
 	proofCallback  ProofRequestedCallback
 	linkCallback   LinkEstablishedCallback
 
-	ratchetsEnabled    bool
-	ratchetPath        string
-	ratchetCount       int
-	ratchetInterval    int
-	enforceRatchets    bool
-	latestRatchetTime  time.Time
-	latestRatchetID    []byte
-	ratchets           [][]byte
-	ratchetFileLock    sync.Mutex
+	ratchetsEnabled   bool
+	ratchetPath       string
+	ratchetCount      int
+	ratchetInterval   int
+	enforceRatchets   bool
+	latestRatchetTime time.Time
+	latestRatchetID   []byte
+	ratchets          [][]byte
+	ratchetFileLock   sync.Mutex
 
 	defaultAppData []byte
 	mutex          sync.RWMutex
@@ -90,7 +102,7 @@ type Destination struct {
 	requestHandlers map[string]*RequestHandler
 }
 
-func New(id *identity.Identity, direction byte, destType byte, appName string, transport *transport.Transport, aspects ...string) (*Destination, error) {
+func New(id *identity.Identity, direction byte, destType byte, appName string, transport Transport, aspects ...string) (*Destination, error) {
 	debug.Log(debug.DEBUG_INFO, "Creating new destination", "app", appName, "type", destType, "direction", direction)
 
 	if id == nil {
@@ -121,7 +133,7 @@ func New(id *identity.Identity, direction byte, destType byte, appName string, t
 
 // FromHash creates a destination from a known hash (e.g., from an announce).
 // This is used by clients to create destination objects for servers they've discovered.
-func FromHash(hash []byte, id *identity.Identity, destType byte, transport *transport.Transport) (*Destination, error) {
+func FromHash(hash []byte, id *identity.Identity, destType byte, transport Transport) (*Destination, error) {
 	debug.Log(debug.DEBUG_INFO, "Creating destination from hash", "hash", fmt.Sprintf("%x", hash))
 
 	if id == nil {
@@ -152,17 +164,17 @@ func (d *Destination) calculateHash() []byte {
 	// destination_hash = SHA256(name_hash_10bytes + identity_hash_16bytes)[:16]
 	// Identity hash is the truncated hash of the public key (16 bytes)
 	identityHash := identity.TruncatedHash(d.identity.GetPublicKey())
-	
+
 	// Name hash is the FULL 32-byte SHA256, then we take first 10 bytes for concatenation
 	nameHashFull := sha256.Sum256([]byte(d.ExpandName()))
-	nameHash10 := nameHashFull[:10]  // Only use 10 bytes
+	nameHash10 := nameHashFull[:10] // Only use 10 bytes
 
 	debug.Log(debug.DEBUG_ALL, "Identity hash", "hash", fmt.Sprintf("%x", identityHash))
 	debug.Log(debug.DEBUG_ALL, "Name hash (10 bytes)", "hash", fmt.Sprintf("%x", nameHash10))
 
 	// Concatenate name_hash (10 bytes) + identity_hash (16 bytes) = 26 bytes
 	combined := append(nameHash10, identityHash...)
-	
+
 	// Then hash again and truncate to 16 bytes
 	finalHashFull := sha256.Sum256(combined)
 	finalHash := finalHashFull[:16]
@@ -180,50 +192,52 @@ func (d *Destination) ExpandName() string {
 	return name
 }
 
-func (d *Destination) Announce(appData []byte) error {
+func (d *Destination) Announce(pathResponse bool, tag []byte, attachedInterface common.NetworkInterface) error {
 	d.mutex.Lock()
 	defer d.mutex.Unlock()
 
-	debug.Log(debug.DEBUG_VERBOSE, "Announcing destination", "name", d.ExpandName())
+	debug.Log(debug.DEBUG_VERBOSE, "Announcing destination", "name", d.ExpandName(), "path_response", pathResponse)
 
-	if appData == nil {
-		appData = d.defaultAppData
-	}
+	appData := d.defaultAppData
 
 	// Create announce packet using announce package
-	// Pass the destination hash, name, and app data
-	announce, err := announce.New(d.identity, d.hashValue, d.ExpandName(), appData, false, d.transport.GetConfig())
+	announceObj, err := announce.New(d.identity, d.hashValue, d.ExpandName(), appData, pathResponse, d.transport.GetConfig())
 	if err != nil {
 		return fmt.Errorf("failed to create announce: %w", err)
 	}
 
-	packet := announce.GetPacket()
+	packet := announceObj.GetPacket()
 	if packet == nil {
 		return errors.New("failed to create announce packet")
 	}
 
-	// Send announce packet to all interfaces
-	debug.Log(debug.DEBUG_VERBOSE, "Sending announce packet to all interfaces")
+	if pathResponse && tag != nil {
+		debug.Log(debug.DEBUG_INFO, "Sending path response announce", "tag", fmt.Sprintf("%x", tag))
+	}
+
 	if d.transport == nil {
 		return errors.New("transport not initialized")
 	}
 
-	interfaces := d.transport.GetInterfaces()
-	debug.Log(debug.DEBUG_ALL, "Got interfaces from transport", "count", len(interfaces))
-
 	var lastErr error
-	for name, iface := range interfaces {
-		debug.Log(debug.DEBUG_ALL, "Checking interface", "name", name, "enabled", iface.IsEnabled(), "online", iface.IsOnline())
-		if iface.IsEnabled() && iface.IsOnline() {
-			debug.Log(debug.DEBUG_ALL, "Sending announce to interface", "name", name, "bytes", len(packet))
-			if err := iface.Send(packet, ""); err != nil {
-				debug.Log(debug.DEBUG_ERROR, "Failed to send announce on interface", "name", name, "error", err)
+	if attachedInterface != nil {
+		if attachedInterface.IsEnabled() && attachedInterface.IsOnline() {
+			debug.Log(debug.DEBUG_VERBOSE, "Sending announce to attached interface", "name", attachedInterface.GetName())
+			if err := attachedInterface.Send(packet, ""); err != nil {
+				debug.Log(debug.DEBUG_ERROR, "Failed to send announce on attached interface", "error", err)
 				lastErr = err
-			} else {
-				debug.Log(debug.DEBUG_ALL, "Successfully sent announce to interface", "name", name)
 			}
-		} else {
-			debug.Log(debug.DEBUG_ALL, "Skipping interface", "name", name, "reason", "not enabled or not online")
+		}
+	} else {
+		interfaces := d.transport.GetInterfaces()
+		for name, iface := range interfaces {
+			if iface.IsEnabled() && iface.IsOnline() {
+				debug.Log(debug.DEBUG_VERBOSE, "Sending announce to interface", "name", name)
+				if err := iface.Send(packet, ""); err != nil {
+					debug.Log(debug.DEBUG_ERROR, "Failed to send announce on interface", "name", name, "error", err)
+					lastErr = err
+				}
+			}
 		}
 	}
 
@@ -234,7 +248,7 @@ func (d *Destination) AcceptsLinks(accepts bool) {
 	d.mutex.Lock()
 	defer d.mutex.Unlock()
 	d.acceptsLinks = accepts
-	
+
 	// Register with transport if accepting links
 	if accepts && d.transport != nil {
 		d.transport.RegisterDestination(d.hashValue, d)
@@ -256,27 +270,26 @@ func (d *Destination) GetLinkCallback() common.LinkEstablishedCallback {
 
 func (d *Destination) HandleIncomingLinkRequest(pkt interface{}, transport interface{}, networkIface common.NetworkInterface) error {
 	debug.Log(debug.DEBUG_INFO, "Handling incoming link request for destination", "hash", fmt.Sprintf("%x", d.GetHash()))
-	
+
 	pktObj, ok := pkt.(*packet.Packet)
 	if !ok {
 		return errors.New("invalid packet type")
 	}
-	
-	transportObj, ok := transport.(*transport.Transport)
-	if !ok {
-		return errors.New("invalid transport type")
+
+	if incomingLinkHandler == nil {
+		return errors.New("no incoming link handler registered")
 	}
-	
-	link, err := link.HandleIncomingLinkRequest(pktObj, d, transportObj, networkIface)
+
+	linkIface, err := incomingLinkHandler(pktObj, d, transport, networkIface)
 	if err != nil {
 		return fmt.Errorf("failed to handle link request: %w", err)
 	}
-	
-	if d.linkCallback != nil && link != nil {
+
+	if d.linkCallback != nil && linkIface != nil {
 		debug.Log(debug.DEBUG_INFO, "Calling link established callback")
-		d.linkCallback(link)
+		d.linkCallback(linkIface)
 	}
-	
+
 	return nil
 }
 
@@ -415,7 +428,7 @@ func (d *Destination) GetRequestHandler(pathHash []byte) func([]byte, []byte, []
 				if handler.AllowMode == ALLOW_ALL {
 					allowed = true
 				} else if handler.AllowMode == ALLOW_LIST && remoteIdentity != nil {
-					remoteHash := remoteIdentity.GetHash()
+					remoteHash := remoteIdentity.Hash()
 					for _, allowedHash := range handler.AllowedList {
 						if string(remoteHash) == string(allowedHash) {
 							allowed = true
@@ -428,7 +441,11 @@ func (d *Destination) GetRequestHandler(pathHash []byte) func([]byte, []byte, []
 					return nil
 				}
 
-				return handler.ResponseGenerator(pathHash, data, requestID, remoteIdentity, requestedAt)
+				result := handler.ResponseGenerator(handler.Path, data, requestID, nil, remoteIdentity, requestedAt.Unix())
+				if result == nil {
+					return nil
+				}
+				return result
 			}
 		}
 	}
@@ -446,7 +463,11 @@ func (d *Destination) HandleRequest(path string, data []byte, requestID []byte, 
 	}
 
 	debug.Log(debug.DEBUG_VERBOSE, "Calling request handler", "path", path)
-	return handler.ResponseGenerator(path, data, requestID, linkID, remoteIdentity, requestedAt)
+	result := handler.ResponseGenerator(path, data, requestID, linkID, remoteIdentity, requestedAt)
+	if result == nil {
+		return []byte(">Not Found\n\nThe requested resource was not found.")
+	}
+	return result
 }
 
 func (d *Destination) Encrypt(plaintext []byte) ([]byte, error) {
