@@ -532,6 +532,41 @@ func FromFile(path string) (*Identity, error) {
 	return ident, nil
 }
 
+func LoadOrCreateTransportIdentity() (*Identity, error) {
+	storagePath := os.Getenv("RETICULUM_STORAGE_PATH")
+	if storagePath == "" {
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			return nil, fmt.Errorf("failed to get home directory: %w", err)
+		}
+		storagePath = fmt.Sprintf("%s/.reticulum/storage", homeDir)
+	}
+
+	if err := os.MkdirAll(storagePath, 0700); err != nil {
+		return nil, fmt.Errorf("failed to create storage directory: %w", err)
+	}
+
+	transportIdentityPath := fmt.Sprintf("%s/transport_identity", storagePath)
+	
+	if ident, err := FromFile(transportIdentityPath); err == nil {
+		debug.Log(debug.DEBUG_INFO, "Loaded transport identity from storage")
+		return ident, nil
+	}
+
+	debug.Log(debug.DEBUG_INFO, "No valid transport identity in storage, creating new one")
+	ident, err := New()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create transport identity: %w", err)
+	}
+
+	if err := ident.ToFile(transportIdentityPath); err != nil {
+		return nil, fmt.Errorf("failed to save transport identity: %w", err)
+	}
+
+	debug.Log(debug.DEBUG_INFO, "Created and saved transport identity")
+	return ident, nil
+}
+
 func (i *Identity) loadPrivateKey(privateKey, signingSeed []byte) error {
 	if len(privateKey) != 32 || len(signingSeed) != 32 {
 		return errors.New("invalid private key length")
