@@ -58,6 +58,7 @@ const (
 	PROCESSING_GRACE              = 1.0
 	RETRY_GRACE_TIME              = 0.25
 	PER_RETRY_DELAY               = 0.5
+	RESPONSE_MAX_GRACE_TIME       = 10.0
 )
 
 type Resource struct {
