@@ -841,9 +841,9 @@ func (t *Transport) HandlePacket(data []byte, iface common.NetworkInterface) {
 		}
 		t.handleProofPacket(pkt, iface)
 	case 0x00:
-		// Data packets with destType=2 are for established links
-		if destType == 2 {
-			debug.Log(debug.DEBUG_ERROR, "Processing link data packet (dest_type=2)", "packet_size", len(data))
+		// Data packets addressed to link destinations carry link traffic
+		if destType == DEST_TYPE_LINK {
+			debug.Log(debug.DEBUG_ERROR, "Processing link data packet (dest_type=3)", "packet_size", len(data))
 			t.handleLinkPacket(data[1:], iface, 0x00)
 		} else {
 			debug.Log(debug.DEBUG_ERROR, "Processing data packet (type 0x00)", "packet_size", len(data), "dest_type", destType, "header_type", headerType)
@@ -1135,7 +1135,7 @@ func (t *Transport) handleLinkPacket(data []byte, iface common.NetworkInterface,
 		return
 	}
 
-	// Otherwise, this is a data packet for an established link (destType=2, packetType=0x00)
+	// Otherwise, this is a data packet for an established link
 	debug.Log(debug.DEBUG_ERROR, "Processing link data packet")
 
 	// Parse as data packet - prepend packet type 0x00
