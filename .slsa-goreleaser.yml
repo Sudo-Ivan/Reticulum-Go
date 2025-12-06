@@ -1,0 +1,38 @@
+version: 1
+
+builds:
+  - id: reticulum-go
+    main: ./cmd/reticulum-go
+    binary: reticulum-go
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - id: archives
+    builds:
+      - reticulum-go
+    format: tar.gz
+    files:
+      - LICENSE
+      - README.md
+
+checksums:
+  name_template: "{{ .ProjectName }}_checksums.txt"
+
+release:
+  github:
+    owner: Sudo-Ivan
+    name: reticulum-go
+
+snapshot:
+  name_template: snapshot
+
