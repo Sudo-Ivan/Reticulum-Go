@@ -16,7 +16,7 @@ jobs:
       id-token: write
       contents: write
       actions: read
-    uses: slsa-framework/slsa-github-generator/.github/workflows/builder_go_slsa3.yml@9255e11bd1ff6fa028051c099dc4549121d250d2
+    uses: slsa-framework/slsa-github-generator/.github/workflows/builder_go_slsa3.yml@v2.1.0
     with:
       go-version: "1.24"
       config-file: .slsa-goreleaser.yml
