@@ -1327,7 +1327,9 @@ func (t *Transport) processPathRequest(destHash []byte, attachedIface common.Net
 	if isLocal {
 		if dest, ok := localDest.(*destination.Destination); ok {
 			debug.Log(debug.DEBUG_INFO, "Answering path request for local destination", "dest_hash", fmt.Sprintf("%x", destHash))
-			dest.Announce(true, tag, attachedIface)
+			if err := dest.Announce(true, tag, attachedIface); err != nil {
+				debug.Log(debug.DEBUG_ERROR, "Failed to announce local destination for path request", "error", err)
+			}
 		}
 		return
 	}
@@ -1402,7 +1404,9 @@ func (t *Transport) processPathRequest(destHash []byte, attachedIface common.Net
 					TTL:             15,
 					Recursive:       true,
 				}
-				t.sendPathRequest(req, name)
+				if err := t.sendPathRequest(req, name); err != nil {
+					debug.Log(debug.DEBUG_INFO, "Failed to send path request", "interface", name, "error", err)
+				}
 			}
 		}
 	} else {
