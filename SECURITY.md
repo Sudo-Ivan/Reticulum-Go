@@ -4,7 +4,7 @@ We use [Socket](https://socket.dev/), [Deepsource](https://deepsource.com/) and 
 
 ## Supply Chain Security
 
-- All actions are pinned to a commit hash. 
+- All actions are pinned to a full-length commit hash. 
 
 ## Cryptography Dependencies
 
