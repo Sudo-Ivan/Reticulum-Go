@@ -1,0 +1,42 @@
+name: "CodeQL Advanced"
+
+on:
+  push:
+    branches: ["main", "tinygo"]
+  pull_request:
+    branches: ["main", "tinygo"]
+  schedule:
+    - cron: "30 21 * * 6"
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze (go)
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      packages: read
+      actions: read
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [go]
+        build-mode: [autobuild]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@cf1bb45a277cb3c205638b2cd5c984db1c46a412
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@cf1bb45a277cb3c205638b2cd5c984db1c46a412
+        with:
+          category: "/language:${{ matrix.language }}"
+
