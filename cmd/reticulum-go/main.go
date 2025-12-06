@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"sync"
 	"syscall"
 	"time"
 
 	"github.com/Sudo-Ivan/reticulum-go/internal/config"
+	"github.com/Sudo-Ivan/reticulum-go/internal/storage"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/buffer"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/channel"
 	"github.com/Sudo-Ivan/reticulum-go/pkg/common"
@@ -33,7 +35,7 @@ const (
 	ANNOUNCE_RATE_GRACE   = 3    // Number of grace announces before enforcing rate
 	ANNOUNCE_RATE_PENALTY = 7200 // Additional penalty time for rate violations
 	MAX_ANNOUNCE_HOPS     = 128  // Maximum number of hops for announces
-	APP_NAME              = "Go-Client"
+	APP_NAME              = "Reticulum-Go Test Node"
 	APP_ASPECT            = "node" // Always use "node" for node announces
 )
 
@@ -48,6 +50,7 @@ type Reticulum struct {
 	announceHistoryMu sync.RWMutex
 	identity          *identity.Identity
 	destination       *destination.Destination
+	storage           *storage.Manager
 
 	// Node-specific information
 	maxTransferSize int16 // Max transfer size in KB
@@ -78,19 +81,48 @@ func NewReticulum(cfg *common.ReticulumConfig) (*Reticulum, error) {
 	}
 	debug.Log(debug.DEBUG_INFO, "Directories initialized")
 
+	// Initialize storage manager
+	storageMgr, err := storage.NewManager()
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize storage manager: %v", err)
+	}
+	debug.Log(debug.DEBUG_INFO, "Storage manager initialized")
+
 	t := transport.NewTransport(cfg)
 	debug.Log(debug.DEBUG_INFO, "Transport initialized")
 
-	identity, err := identity.NewIdentity()
-	if err != nil {
-		return nil, fmt.Errorf("failed to create identity: %v", err)
+	// Load or create identity
+	identityPath := storageMgr.GetIdentityPath()
+
+	var ident *identity.Identity
+
+	if _, err := os.Stat(identityPath); err == nil {
+		// Identity file exists, load it
+		ident, err = identity.FromFile(identityPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load identity: %v", err)
+		}
+		debug.Log(debug.DEBUG_ERROR, "Loaded existing identity", "hash", fmt.Sprintf("%x", ident.Hash()))
+	} else {
+		// Create new identity
+		ident, err = identity.NewIdentity()
+		if err != nil {
+			return nil, fmt.Errorf("failed to create identity: %v", err)
+		}
+		debug.Log(debug.DEBUG_ERROR, "Created new identity", "hash", fmt.Sprintf("%x", ident.Hash()))
+
+		// Save it to disk
+		if err := ident.ToFile(identityPath); err != nil {
+			debug.Log(debug.DEBUG_ERROR, "Failed to save identity to file", "error", err)
+		} else {
+			debug.Log(debug.DEBUG_INFO, "Identity saved to file", "path", identityPath)
+		}
 	}
-	debug.Log(debug.DEBUG_ERROR, "Created new identity", "hash", fmt.Sprintf("%x", identity.Hash()))
 
 	// Create destination
 	debug.Log(debug.DEBUG_INFO, "Creating destination...")
 	dest, err := destination.New(
-		identity,
+		ident,
 		destination.IN,
 		destination.SINGLE,
 		"nomadnetwork",
@@ -113,8 +145,9 @@ func NewReticulum(cfg *common.ReticulumConfig) (*Reticulum, error) {
 		buffers:         make(map[string]*buffer.Buffer),
 		pathRequests:    make(map[string]*common.PathRequest),
 		announceHistory: make(map[string]announceRecord),
-		identity:        identity,
+		identity:        ident,
 		destination:     dest,
+		storage:         storageMgr,
 
 		// Node-specific information
 		maxTransferSize: 500,  // Default 500KB
@@ -129,6 +162,7 @@ func NewReticulum(cfg *common.ReticulumConfig) (*Reticulum, error) {
 	ratchetPath := ".reticulum-go/storage/ratchets/" + r.identity.GetHexHash()
 	dest.EnableRatchets(ratchetPath)
 	dest.SetProofStrategy(destination.PROVE_APP)
+
 	debug.Log(debug.DEBUG_VERBOSE, "Configured destination features")
 
 	// Initialize interfaces from config
@@ -325,7 +359,7 @@ func (tw *transportWrapper) RTT() float64 {
 	return tw.GetRTT()
 }
 
-func (tw *transportWrapper) GetStatus() int {
+func (tw *transportWrapper) GetStatus() byte {
 	return transport.STATUS_ACTIVE
 }
 
@@ -361,13 +395,34 @@ func (tw *transportWrapper) SetPacketDelivered(packet interface{}, callback func
 	callback(packet)
 }
 
+func (tw *transportWrapper) GetLinkID() []byte {
+	return nil
+}
+
+func (tw *transportWrapper) HandleInbound(pkt *packet.Packet) error {
+	return nil
+}
+
+func (tw *transportWrapper) ValidateLinkProof(pkt *packet.Packet) error {
+	return nil
+}
+
 func initializeDirectories() error {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("failed to get home directory: %v", err)
+	}
+
+	basePath := filepath.Join(homeDir, ".reticulum-go")
 	dirs := []string{
-		".reticulum-go",
-		".reticulum-go/storage",
-		".reticulum-go/storage/destinations",
-		".reticulum-go/storage/identities",
-		".reticulum-go/storage/ratchets",
+		basePath,
+		filepath.Join(basePath, "storage"),
+		filepath.Join(basePath, "storage", "destinations"),
+		filepath.Join(basePath, "storage", "identities"),
+		filepath.Join(basePath, "storage", "ratchets"),
+		filepath.Join(basePath, "storage", "cache"),
+		filepath.Join(basePath, "storage", "cache", "announces"),
+		filepath.Join(basePath, "storage", "resources"),
 	}
 
 	for _, dir := range dirs {
@@ -414,8 +469,9 @@ func (r *Reticulum) Start() error {
 
 	// Send initial announce
 	debug.Log(debug.DEBUG_ERROR, "Sending initial announce")
-	nodeName := "Go-Client"
-	if err := r.destination.Announce([]byte(nodeName)); err != nil {
+	nodeName := "Reticulum-Go Test Node"
+	r.destination.SetDefaultAppData([]byte(nodeName))
+	if err := r.destination.Announce(false, nil, nil); err != nil {
 		debug.Log(debug.DEBUG_CRITICAL, "Failed to send initial announce", "error", err)
 	}
 
@@ -426,7 +482,7 @@ func (r *Reticulum) Start() error {
 
 		for {
 			debug.Log(debug.DEBUG_INFO, "Announcing destination...")
-			err := r.destination.Announce([]byte(nodeName))
+			err := r.destination.Announce(false, nil, nil)
 			if err != nil {
 				debug.Log(debug.DEBUG_CRITICAL, "Could not send announce", "error", err)
 			}
