@@ -2035,7 +2035,9 @@ func (l *Link) ValidateLinkProof(pkt *packet.Packet) error {
 	if err == nil {
 		rttPkt.Data = encrypted
 		if err := rttPkt.Pack(); err == nil {
-			l.transport.SendPacket(rttPkt)
+			if err := l.transport.SendPacket(rttPkt); err != nil {
+				debug.Log(debug.DEBUG_ERROR, "Failed to send RTT packet", "error", err)
+			}
 			l.lastOutbound = time.Now()
 		}
 	}
