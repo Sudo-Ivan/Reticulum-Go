@@ -18,7 +18,7 @@ jobs:
       actions: read
     uses: slsa-framework/slsa-github-generator/.github/workflows/builder_go_slsa3.yml@v2.1.0
     with:
-      go-version: "1.24"
+      go-version-file: go.mod
       config-file: .slsa-goreleaser.yml
       upload-assets: true
 
