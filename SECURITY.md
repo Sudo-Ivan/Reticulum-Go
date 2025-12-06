@@ -1,6 +1,6 @@
 # Security Policy
 
-We use [Socket](https://socket.dev/), [Deepsource](https://deepsource.com/) and [gosec](https://github.com/securego/gosec) for this project.
+We use [Socket](https://socket.dev/), [Deepsource](https://deepsource.com/), CodeQL Advanced and [gosec](https://github.com/securego/gosec) for this project.
 
 ## Supply Chain Security
 
