@@ -119,10 +119,16 @@ func TestDecryptAES256CBCErrorCases(t *testing.T) {
 			t.Fatalf("Failed to create test ciphertext: %v", err)
 		}
 
-		// Corrupt the last byte (which affects padding)
+		// Corrupt the byte that XORs with the last padding byte.
+		// In CBC, P[i] = D(C[i]) ^ C[i-1].
+		// The last byte of plaintext P[len-1] depends on C[len-1] and C[len-1-BlockSize].
+		// If we modify C[len-1-BlockSize], we flip the bits of P[len-1] predictably.
+		// If we modify C[len-1] (the last byte of ciphertext), we scramble the whole block D(C[len-1]),
+		// which might accidentally result in valid padding (e.g. 0x01).
+		// So we corrupt the IV (or previous block) corresponding to the last byte.
 		corruptedCiphertext := make([]byte, len(ciphertext))
 		copy(corruptedCiphertext, ciphertext)
-		corruptedCiphertext[len(corruptedCiphertext)-1] ^= 0xFF
+		corruptedCiphertext[len(ciphertext)-aes.BlockSize-1] ^= 0xFF
 
 		_, err = DecryptAES256CBC(key, corruptedCiphertext)
 		if err == nil {
